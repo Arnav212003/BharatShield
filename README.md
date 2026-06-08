@@ -100,7 +100,7 @@ BharatShield/
 
 ## 🚀 Getting Started
 
-git clone https://github.com/arnavsingh/BharatShield.git  
+git clone https://github.com/Arnav212003/BharatShield.git
 cd BharatShield  
 pip install -r requirements.txt  
 
