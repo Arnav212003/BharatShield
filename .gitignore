@@ -20,5 +20,3 @@ Thumbs.db
 # Streamlit local config
 .streamlit/
 
-# Ignore trained models
-model/

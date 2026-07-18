@@ -190,7 +190,8 @@ X_test_hybrid = hstack([csr_matrix(X_test_lexical.values), X_test_nlp])
 # ---- model training ----
 print("\nTraining lexical Random Forest model...")
 lexical_model = RandomForestClassifier(
-    n_estimators=100,
+    n_estimators=60,
+    max_depth=18,
     random_state=42,
     class_weight="balanced",
     n_jobs=-1

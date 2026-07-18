@@ -1,0 +1,4 @@
+Model,Accuracy,Precision,Recall,F1 Score,ROC-AUC
+Lexical Random Forest Model,89.07,79.48,82.85,81.13,94.86
+Hybrid NLP + Lexical Logistic Regression Model,92.58,83.98,91.26,87.47,97.84
+Final Calibrated System,87.4,70.1,96.92,81.36,97.93
