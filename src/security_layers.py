@@ -1,50 +1,24 @@
 import os
 import json
+
 import tldextract
 
 from features import extract_features
 
-
-# -----------------------------
-# Base paths
-# -----------------------------
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIG_DIR = os.path.join(BASE_DIR, "config")
-TRUSTED_DOMAINS_PATH = os.path.join(CONFIG_DIR, "trusted_domains.json")
+TRUSTED_DOMAINS_PATH = os.path.join(BASE_DIR, "config", "trusted_domains.json")
 
-
-# -----------------------------
-# Shared feature names
-# -----------------------------
+# same order as the output of extract_features()
 FEATURE_NAMES = [
-    "URL Length",
-    "Domain Length",
-    "Full Domain Length",
-    "Dots",
-    "Hyphens",
-    "Slashes",
-    "Question Marks",
-    "Equal Symbols",
-    "@ Count",
-    "Percent Symbols",
-    "Digits",
-    "Special Characters",
-    "HTTPS",
-    "Has @ Symbol",
-    "Suspicious Keyword",
-    "IP Address",
-    "Short URL",
-    "Suspicious TLD",
-    "Has Query",
-    "Subdomain Count",
-    "Hyphen In Domain",
-    "Digit In Domain"
+    "URL Length", "Domain Length", "Full Domain Length",
+    "Dots", "Hyphens", "Slashes", "Question Marks", "Equal Symbols",
+    "@ Count", "Percent Symbols", "Digits", "Special Characters",
+    "HTTPS", "Has @ Symbol", "Suspicious Keyword", "IP Address",
+    "Short URL", "Suspicious TLD", "Has Query", "Subdomain Count",
+    "Hyphen In Domain", "Digit In Domain"
 ]
 
-
-# -----------------------------
-# Shared thresholds
-# -----------------------------
+# thresholds - risk score on a 0 to 1 scale
 SAFE_BINARY_CUTOFF = 0.35
 PHISHING_CUTOFF = 0.70
 
@@ -53,163 +27,83 @@ NO_PATTERN_REDUCTION_FACTOR = 0.45
 STRONG_REASON_BONUS_TWO = 0.15
 STRONG_REASON_BONUS_THREE = 0.10
 
-
-# -----------------------------
-# Domain reputation config
-# -----------------------------
-DEFAULT_DOMAIN_REPUTATION_ALLOWLIST = [
-    "google.com",
-    "chatgpt.com",
-    "openai.com",
-    "github.com",
-    "githubusercontent.com",
-
-    "camsonline.com",
-    "digital.camsonline.com",
-    "newmycams.camsonline.com",
-
-    "jioblackrockamc.com",
-    "jiofinance.com",
-
-    "icicibank.com",
-    "hdfcbank.com",
-    "sbi.co.in",
-    "onlinesbi.sbi"
+# fallback list used when the config file is missing
+DEFAULT_ALLOWLIST = [
+    "google.com", "chatgpt.com", "openai.com",
+    "github.com", "githubusercontent.com",
+    "camsonline.com", "digital.camsonline.com", "newmycams.camsonline.com",
+    "jioblackrockamc.com", "jiofinance.com",
+    "icicibank.com", "hdfcbank.com", "sbi.co.in", "onlinesbi.sbi"
 ]
 
 
 def load_domain_reputation_allowlist():
-    """
-    Loads domain reputation allowlist from config/trusted_domains.json.
-
-    If the config file is missing or invalid, the system falls back
-    to the default built-in allowlist.
-
-    This keeps training/evaluation and live prediction consistent.
-    """
-
     try:
         if os.path.exists(TRUSTED_DOMAINS_PATH):
-            with open(TRUSTED_DOMAINS_PATH, "r", encoding="utf-8") as file:
-                domains = json.load(file)
-
-            return [
-                domain.lower().strip()
-                for domain in domains
-                if isinstance(domain, str) and domain.strip()
-            ]
-
+            with open(TRUSTED_DOMAINS_PATH, "r", encoding="utf-8") as f:
+                domains = json.load(f)
+            return [d.lower().strip() for d in domains
+                    if isinstance(d, str) and d.strip()]
     except Exception:
+        # config file is corrupt, fall back to defaults
         pass
-
-    return DEFAULT_DOMAIN_REPUTATION_ALLOWLIST
+    return DEFAULT_ALLOWLIST
 
 
 DOMAIN_REPUTATION_ALLOWLIST = load_domain_reputation_allowlist()
-
-# Backward-compatible alias
-TRUSTED_DOMAINS = DOMAIN_REPUTATION_ALLOWLIST
+TRUSTED_DOMAINS = DOMAIN_REPUTATION_ALLOWLIST  # kept for older imports
 
 
-# -----------------------------
-# Domain helpers
-# -----------------------------
 def get_domain(url):
-    """
-    Extracts root domain and full domain from a URL.
-
-    Example:
-    URL: https://digital.camsonline.com/login
-
-    root_domain = camsonline.com
-    full_domain = digital.camsonline.com
-    """
-
-    extracted = tldextract.extract(str(url).lower())
-
-    domain = extracted.domain
-    suffix = extracted.suffix
-    subdomain = extracted.subdomain
-
-    root_domain = f"{domain}.{suffix}" if suffix else domain
-
-    full_domain = ".".join(
-        part for part in [subdomain, domain, suffix] if part
-    )
-
-    return root_domain, full_domain
+    """Returns both root domain and full domain.
+    e.g. digital.camsonline.com/login -> (camsonline.com, digital.camsonline.com)"""
+    ext = tldextract.extract(str(url).lower())
+    root = f"{ext.domain}.{ext.suffix}" if ext.suffix else ext.domain
+    full = ".".join(p for p in [ext.subdomain, ext.domain, ext.suffix] if p)
+    return root, full
 
 
 def is_trusted_domain(url):
-    """
-    Checks whether the URL belongs to the domain reputation allowlist.
-    """
-
-    root_domain, full_domain = get_domain(url)
-
-    return (
-        root_domain in DOMAIN_REPUTATION_ALLOWLIST
-        or full_domain in DOMAIN_REPUTATION_ALLOWLIST
-    )
+    root, full = get_domain(url)
+    return root in DOMAIN_REPUTATION_ALLOWLIST or full in DOMAIN_REPUTATION_ALLOWLIST
 
 
-# -----------------------------
-# Explainability layer
-# -----------------------------
 def get_reasons_from_features(url, features):
-    """
-    Generates explainable detection reasons using already extracted features.
-    This is used during training/evaluation to avoid recalculating features.
-    """
-
-    feature_values = list(features)
+    """Builds human readable reasons from already extracted feature values.
+    Used during training/evaluation to avoid recomputing features."""
+    f = list(features)
     reasons = []
-
     trusted = is_trusted_domain(url)
 
-    if feature_values[12] == 0:
+    if f[12] == 0:
         reasons.append("No HTTPS found")
-
-    if feature_values[14] == 1 and not trusted:
+    if f[14] == 1 and not trusted:
         reasons.append("Suspicious keyword found")
-
-    if feature_values[15] == 1:
+    if f[15] == 1:
         reasons.append("IP address used in URL")
-
-    if feature_values[16] == 1:
+    if f[16] == 1:
         reasons.append("Shortened URL detected")
-
-    if feature_values[17] == 1:
+    if f[17] == 1:
         reasons.append("Suspicious domain extension found")
-
-    if feature_values[0] > 75 and not trusted:
+    if f[0] > 75 and not trusted:
         reasons.append("URL is too long")
-
-    if feature_values[4] >= 2 and not trusted:
+    if f[4] >= 2 and not trusted:
         reasons.append("Too many hyphens")
-
-    if feature_values[3] > 4 and not trusted:
+    if f[3] > 4 and not trusted:
         reasons.append("Too many dots/subdomains")
-
-    if feature_values[5] > 6 and not trusted:
+    if f[5] > 6 and not trusted:
         reasons.append("Too many slashes")
-
-    if feature_values[10] >= 15 and not trusted:
+    if f[10] >= 15 and not trusted:
         reasons.append("Many digits found in URL")
-
-    if feature_values[13] == 1:
+    if f[13] == 1:
         reasons.append("@ symbol found in URL")
-
-    if feature_values[18] == 1 and not trusted:
+    if f[18] == 1 and not trusted:
         reasons.append("URL contains query parameters")
-
-    if feature_values[19] >= 3 and not trusted:
+    if f[19] >= 3 and not trusted:
         reasons.append("Too many subdomains")
-
-    if feature_values[20] == 1 and not trusted:
+    if f[20] == 1 and not trusted:
         reasons.append("Hyphen found in domain name")
-
-    if feature_values[21] == 1 and not trusted:
+    if f[21] == 1 and not trusted:
         reasons.append("Digit found in domain name")
 
     if trusted:
@@ -222,96 +116,68 @@ def get_reasons_from_features(url, features):
 
 
 def get_reasons(url):
-    """
-    Generates explainable reasons directly from URL.
-    This is used during live prediction.
-    """
-
-    features = extract_features(url)
-    return get_reasons_from_features(url, features)
+    # used during live prediction - works directly from the URL
+    return get_reasons_from_features(url, extract_features(url))
 
 
-# -----------------------------
-# Calibration layer
-# -----------------------------
+STRONG_REASONS = [
+    "No HTTPS found",
+    "Suspicious keyword found",
+    "Suspicious domain extension found",
+    "IP address used in URL",
+    "Shortened URL detected",
+    "@ symbol found in URL"
+]
+
+
 def apply_confidence_calibration(raw_ml_risk, features, reasons, trusted):
+    """Safety layer applied on top of the raw ML probability.
+
+    It does three things:
+    - reduces false positives for trusted official domains
+    - lowers risk when no suspicious pattern is found
+    - raises risk when multiple strong phishing indicators appear
+
+    Note: these thresholds are set manually for now. In production
+    they should be tuned on a validation set.
     """
-    Applies confidence calibration on top of raw ML probability.
+    f = list(features)
+    risk = raw_ml_risk
 
-    This is not a replacement for the ML model.
-    It is a separate user-facing safety layer.
+    strong_count = sum(r in reasons for r in STRONG_REASONS)
 
-    Purpose:
-    1. Reduce false positives for official trusted domains.
-    2. Reduce risk when no suspicious pattern is found.
-    3. Increase risk when multiple strong phishing indicators appear.
-
-    In a production version, these thresholds should be tuned
-    using a validation dataset.
-    """
-
-    feature_values = list(features)
-    final_risk = raw_ml_risk
-
-    strong_reasons = [
-        "No HTTPS found",
-        "Suspicious keyword found",
-        "Suspicious domain extension found",
-        "IP address used in URL",
-        "Shortened URL detected",
-        "@ symbol found in URL"
-    ]
-
-    strong_reason_count = sum(reason in reasons for reason in strong_reasons)
-
-    # Domain reputation false-positive control
+    # trusted domain with no red flags -> cap the risk
     if trusted:
-        is_https = feature_values[12] == 1
-        has_ip = feature_values[15] == 1
-        has_short_url = feature_values[16] == 1
-        has_at_symbol = feature_values[13] == 1
+        clean = (f[12] == 1 and f[15] == 0 and f[16] == 0 and f[13] == 0)
+        if clean:
+            risk = min(risk, TRUSTED_DOMAIN_MAX_RISK)
 
-        if is_https and not has_ip and not has_short_url and not has_at_symbol:
-            final_risk = min(final_risk, TRUSTED_DOMAIN_MAX_RISK)
-
-    # Low-risk calibration
     if reasons == ["No major suspicious pattern found"]:
-        final_risk = final_risk * NO_PATTERN_REDUCTION_FACTOR
+        risk = risk * NO_PATTERN_REDUCTION_FACTOR
 
-    # High-risk calibration
     if not trusted:
-        if strong_reason_count >= 2:
-            final_risk = min(final_risk + STRONG_REASON_BONUS_TWO, 1.0)
+        if strong_count >= 2:
+            risk = min(risk + STRONG_REASON_BONUS_TWO, 1.0)
+        if strong_count >= 3:
+            risk = min(risk + STRONG_REASON_BONUS_THREE, 1.0)
 
-        if strong_reason_count >= 3:
-            final_risk = min(final_risk + STRONG_REASON_BONUS_THREE, 1.0)
-
-    return max(0.0, min(final_risk, 1.0))
+    return max(0.0, min(risk, 1.0))
 
 
-# -----------------------------
-# Shared decision helpers
-# -----------------------------
 def risk_score_to_result(risk_score):
-    if risk_score >= int(PHISHING_CUTOFF * 100):
+    # risk_score arrives on a 0-100 scale here (from predict.py)
+    if risk_score >= PHISHING_CUTOFF * 100:
         return "Phishing/Fraud URL"
-
-    if risk_score >= int(SAFE_BINARY_CUTOFF * 100):
+    if risk_score >= SAFE_BINARY_CUTOFF * 100:
         return "Suspicious URL"
-
     return "Safe URL"
 
 
-def binary_label_from_risk_score(risk_score):
+def binary_label_from_risk_score(final_risk):
+    """Converts final risk (0-1 scale) into a binary label for evaluation.
+
+    Both Suspicious and Phishing are treated as 1 (unsafe) because
+    in phishing detection a false negative is far more dangerous -
+    a suspicious URL should never be reported as fully safe.
     """
-    Converts final risk score into binary evaluation label.
-
-    App has three classes:
-    Safe, Suspicious, Phishing.
-
-    For binary safety evaluation, Suspicious and Phishing are treated
-    as positive/unsafe class because the system should avoid false negatives.
-    A suspicious URL should not be treated as fully safe.
-    """
-
-    return 1 if risk_score >= SAFE_BINARY_CUTOFF else 0
+    return 1 if final_risk >= SAFE_BINARY_CUTOFF else 0

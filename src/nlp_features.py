@@ -1,59 +1,36 @@
 from sklearn.feature_extraction.text import TfidfVectorizer
 
+# convert all URL separators into spaces
+# so TF-IDF gets clean tokens to work with
+_REPLACEMENTS = {
+    "https://": "", "http://": "", "www.": "",
+    "/": " ", "-": " ", "_": " ", ".": " ",
+    "?": " ", "=": " ", "&": " ", "%": " ", "@": " "
+}
+
 
 def clean_url_text(url):
-    """
-    Converts URL into clean lowercase text for NLP processing.
-    """
     url = str(url).lower().strip()
-
-    replacements = {
-        "https://": "",
-        "http://": "",
-        "www.": "",
-        "/": " ",
-        "-": " ",
-        "_": " ",
-        ".": " ",
-        "?": " ",
-        "=": " ",
-        "&": " ",
-        "%": " ",
-        "@": " "
-    }
-
-    for old, new in replacements.items():
+    for old, new in _REPLACEMENTS.items():
         url = url.replace(old, new)
-
     return url
 
 
 def create_nlp_vectorizer():
-    """
-    Creates TF-IDF vectorizer using character n-grams.
-    Character n-grams are useful for phishing URL pattern detection.
-    """
-    vectorizer = TfidfVectorizer(
+    # char n-grams because phishing URLs use odd spellings
+    # like "paypa1" or "g00gle" - word level tokens miss these
+    return TfidfVectorizer(
         analyzer="char_wb",
         ngram_range=(3, 5),
         max_features=5000,
         lowercase=True
     )
 
-    return vectorizer
-
 
 def transform_urls_for_nlp(urls, vectorizer):
-    """
-    Converts URLs into NLP TF-IDF features.
-    """
-    cleaned_urls = [clean_url_text(url) for url in urls]
-    return vectorizer.transform(cleaned_urls)
+    return vectorizer.transform([clean_url_text(u) for u in urls])
 
 
 def fit_transform_urls_for_nlp(urls, vectorizer):
-    """
-    Fits vectorizer on URLs and converts them into NLP TF-IDF features.
-    """
-    cleaned_urls = [clean_url_text(url) for url in urls]
-    return vectorizer.fit_transform(cleaned_urls)
+    # fit only on training data, never on test data (avoids data leakage)
+    return vectorizer.fit_transform([clean_url_text(u) for u in urls])
