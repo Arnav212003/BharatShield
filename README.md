@@ -1,124 +1,59 @@
 # BharatShield 🛡️
 
-AI-Based Phishing URL Detection System using Machine Learning and NLP.
+BharatShield is an AI-based fraud detection system for detecting phishing URLs and suspicious scam messages.
 
-![Python](https://img.shields.io/badge/Python-3.8+-blue)
-![Streamlit](https://img.shields.io/badge/Streamlit-Dashboard-red)
-![Machine Learning](https://img.shields.io/badge/ML-Hybrid%20Detection-green)
-![Cybersecurity](https://img.shields.io/badge/Cybersecurity-Phishing%20Detection-black)
+It combines Machine Learning, NLP, URL security analysis, domain reputation, and explainable risk scoring.
 
----
+## Features
 
-## 🔍 About BharatShield
+- Phishing URL Detection
+- OTP & Scam Message Detection
+- Suspicious Link Analysis
+- Risk Score and Confidence Score
+- Explainable Detection Reasons
+- Trusted Domain Verification
+- Streamlit Dashboard
+- FastAPI Support
+- Model Evaluation and Confusion Matrix
 
-BharatShield is an AI-powered phishing URL detection system designed to identify suspicious and fraudulent URLs using a hybrid machine learning approach.
+## Tech Stack
 
-The system combines:
-- Lexical URL feature analysis
-- NLP-based TF-IDF character n-gram detection
-- Explainable risk scoring
-- Trusted domain verification
+Python, Streamlit, FastAPI, Scikit-learn, Pandas, TF-IDF, Random Forest, Logistic Regression, SciPy and Joblib.
 
-Built with Indian users in mind, BharatShield focuses on detecting phishing attacks targeting banking, payment, and financial platforms.
+## Detection Approach
 
----
+BharatShield uses:
 
-## ✨ Features
+- Random Forest for lexical URL features
+- Logistic Regression with lexical + TF-IDF features
+- Domain reputation and rule-based risk calibration
+- Scam-message analysis for OTP, PIN, CVV, KYC, urgency and suspicious links
 
-✅ Hybrid NLP + Lexical ML Detection  
-✅ Explainable Risk Scoring with Detection Reasons  
-✅ Trusted Domain Verification  
-✅ Real-Time URL Risk Analysis  
-✅ Risk Score + Confidence Score  
-✅ Suspicious Keyword Detection  
-✅ Short URL Detection  
-✅ IP Address Detection  
-✅ Streamlit Dashboard UI  
-✅ Scan History with CSV Export  
-✅ Confusion Matrix & Feature Importance Analytics  
+If a scam message contains a URL, the URL is also scanned using the phishing detection model.
 
----
+## Run
 
-## 🧠 Detection Techniques
-
-BharatShield analyzes URLs using multiple security indicators:
-
-- URL Length Analysis
-- Suspicious Keywords
-- HTTPS Verification
-- Suspicious TLD Detection
-- Shortened URL Detection
-- Subdomain Analysis
-- Digit & Hyphen Detection
-- IP-based URL Detection
-- NLP Character Pattern Detection
-
----
-
-## 🛠️ Tech Stack
-
-| Component | Technology |
-|-----------|-----------|
-| Language | Python 3.8+ |
-| Frontend/UI | Streamlit |
-| ML Models | Random Forest + Logistic Regression |
-| NLP | TF-IDF Character N-Grams |
-| Data Processing | Pandas, Scipy |
-| Visualization | Matplotlib, Seaborn |
-| Model Storage | Joblib |
-
----
-
-## 📁 Project Structure
+Install dependencies:
 
 ```bash
-BharatShield/
-│
-├── app.py
-├── requirements.txt
-├── README.md
-│
-├── data/
-│   └── phishing.csv
-│
-├── model/
-│   ├── phishing_model.pkl
-│   ├── hybrid_model.pkl
-│   ├── nlp_model.pkl
-│   ├── confusion_matrix.png
-│   └── feature_importance.png
-│
-├── src/
-│   ├── features.py
-│   ├── predict.py
-│   ├── train_model.py
-│   └── nlp_features.py
-│
-└── ui/
-    └── style.py
+pip install -r requirements.txt
 
+Start the application:
 
-## 🚀 Getting Started
-
-git clone https://github.com/Arnav212003/BharatShield.git
-cd BharatShield  
-pip install -r requirements.txt  
-
-### 📂 Add Dataset
-Place your dataset inside:
-
-data/phishing.csv
-
-Required columns:
-url, label
-
-Supported labels:
-good/bad, safe/phishing, 0/1
-
-### 🧠 Train the Model
-
-python src/train_model.py
-
-### ▶️ Run the App
-
+```bash
 streamlit run app.py
+
+Run the API:
+
+```bash
+uvicorn api:app --reload
+
+Open API documentation:
+
+```text
+http://127.0.0.1:8000/docs
+
+
+## Note
+
+BharatShield is an educational fraud-detection project. The risk score should be treated as a warning signal, not as a guarantee.

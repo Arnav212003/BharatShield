@@ -1,22 +1,19 @@
-# Python cache
 __pycache__/
 *.pyc
 *.pyo
 
-# Virtual environment
 venv/
 .venv/
 
-# Environment files
 .env
 
-# VS Code settings
 .vscode/
+.idea/
 
-# OS files
+.pytest_cache/
+
 .DS_Store
 Thumbs.db
 
-# Streamlit local config
-.streamlit/
+.streamlit/secrets.toml
 

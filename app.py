@@ -1,390 +1,478 @@
-import sys
 import os
+import sys
 from datetime import datetime
 
-import streamlit as st
 import pandas as pd
+import streamlit as st
 
 
-# ----------------------------
-# Project paths
-# ----------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.path.join(BASE_DIR, "src")
 MODEL_DIR = os.path.join(BASE_DIR, "model")
 
-# Add src folder to Python path
 if SRC_DIR not in sys.path:
     sys.path.append(SRC_DIR)
 
 
-# ----------------------------
-# Page config
-# ----------------------------
-st.set_page_config(
-    page_title="BharatShield",
-    page_icon="🛡️",
-    layout="centered"
-)
-
-
-# ----------------------------
-# Project imports
-# ----------------------------
 try:
-    from predict import predict_url, get_domain, is_trusted_domain
     from features import extract_features
+    from predict import predict_url
+    from scam_message import analyze_scam_message
+    from security_layers import get_domain, is_trusted_domain
     from ui.style import load_css
-
-except Exception as e:
+except Exception as error:
     st.error("Project files or model files could not be loaded.")
-    st.exception(e)
+    st.exception(error)
     st.stop()
 
 
-# ----------------------------
-# Load UI CSS
-# ----------------------------
+st.set_page_config(
+    page_title="BharatShield",
+    page_icon="🛡️",
+    layout="centered",
+)
+
 try:
     load_css()
-except Exception as e:
-    st.warning("Custom CSS could not be loaded.")
-    st.exception(e)
+except Exception:
+    pass
 
 
-# ----------------------------
-# Helper: status config
-# ----------------------------
-def get_status_config(risk_score):
-    if risk_score < 35:
-        return {
-            "status": "Safe",
-            "status_html": '<div class="safe">✅ Safe URL</div>',
-            "reason_class": "safe-reason",
-            "reason_icon": "✅",
-            "explanation": (
-                "This URL looks safe based on the current layered phishing detection system."
-            )
-        }
-
-    if risk_score < 70:
-        return {
-            "status": "Suspicious",
-            "status_html": '<div class="suspicious">⚠️ Suspicious URL</div>',
-            "reason_class": "warning-reason",
-            "reason_icon": "⚠️",
-            "explanation": (
-                "This URL contains some suspicious patterns. Avoid entering passwords, "
-                "OTPs, banking details, or personal information."
-            )
-        }
-
-    return {
-        "status": "Phishing",
-        "status_html": '<div class="danger">🚨 Phishing / Fraud URL Detected</div>',
-        "reason_class": "danger-reason",
-        "reason_icon": "🚨",
-        "explanation": (
-            "This URL shows high-risk phishing patterns. Do not open it or share "
-            "sensitive information."
-        )
-    }
+def show_url_status(result):
+    if result == "Safe URL":
+        st.success("✅ Safe URL")
+    elif result == "Suspicious URL":
+        st.warning("⚠️ Suspicious URL")
+    else:
+        st.error("🚨 Phishing / Fraud URL Detected")
 
 
-# ----------------------------
-# Header
-# ----------------------------
-st.markdown(
-    '<div class="title">🛡️ BharatShield</div>',
-    unsafe_allow_html=True
-)
-
-st.markdown(
-    '<div class="subtitle">AI-Based Phishing URL Detection System</div>',
-    unsafe_allow_html=True
-)
-
-st.markdown(
-    '<div class="tagline">Detect suspicious links using machine learning, risk scoring, and explainable URL analysis.</div>',
-    unsafe_allow_html=True
-)
-
-st.markdown(
-    '<div class="tagline">Model Type: Hybrid NLP + Lexical ML + Domain Reputation + Confidence Calibration</div>',
-    unsafe_allow_html=True
-)
+def show_message_status(status):
+    if status == "Low Risk":
+        st.success("✅ Low Risk Message")
+    elif status == "Suspicious":
+        st.warning("⚠️ Suspicious Message")
+    else:
+        st.error("🚨 Likely Fraud Message")
 
 
-# ----------------------------
-# Session state
-# ----------------------------
-if "scan_history" not in st.session_state:
-    st.session_state.scan_history = []
-
-
-# ----------------------------
-# Input section
-# ----------------------------
-url = st.text_input(
-    "🔗 Enter URL to scan",
-    placeholder="Example: https://google.com or http://secure-bank-login123.xyz/verify-account"
-)
-
-scan_button = st.button("🚀 Scan URL", use_container_width=True)
-
-
-# ----------------------------
-# Scan logic
-# ----------------------------
-if scan_button:
-    input_url = url.strip()
-
-    if not input_url:
-        st.warning("Please enter a URL first.")
-        st.stop()
-
-    with st.spinner("Scanning URL with BharatShield AI..."):
-        try:
-            result, risk_score, reasons, confidence = predict_url(input_url)
-        except Exception as e:
-            st.error("URL scanning failed. Please check model files and feature extraction code.")
-            st.exception(e)
-            st.stop()
-
-    status_config = get_status_config(risk_score)
-
-    status = status_config["status"]
-    status_html = status_config["status_html"]
-    reason_class = status_config["reason_class"]
-    reason_icon = status_config["reason_icon"]
-    explanation = status_config["explanation"]
-
-    st.markdown("## Security Scan Result")
-
+def show_metrics(risk_score, status, confidence):
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        st.markdown(f"""
-        <div class="metric-card">
-            <h3>Risk Score</h3>
-            <h2>{risk_score}%</h2>
-        </div>
-        """, unsafe_allow_html=True)
+        st.metric("Risk Score", f"{risk_score}%")
 
     with col2:
-        st.markdown(f"""
-        <div class="metric-card">
-            <h3>Status</h3>
-            <h2>{status}</h2>
-        </div>
-        """, unsafe_allow_html=True)
+        st.metric("Status", status)
 
     with col3:
-        st.markdown(f"""
-        <div class="metric-card">
-            <h3>Confidence</h3>
-            <h2>{confidence}%</h2>
-        </div>
-        """, unsafe_allow_html=True)
-
-    st.progress(risk_score / 100)
-    st.markdown(status_html, unsafe_allow_html=True)
-
-    # ----------------------------
-    # Risk explanation
-    # ----------------------------
-    st.markdown("### Risk Level Explanation")
-
-    st.markdown(f"""
-    <div class="info-card">
-        {explanation}
-    </div>
-    """, unsafe_allow_html=True)
-
-    # ----------------------------
-    # Current URL Analysis
-    # ----------------------------
-    st.markdown("### Current URL Analysis")
-
-    try:
-        current_features = extract_features(input_url)
-        root_domain, full_domain = get_domain(input_url)
-
-        analysis_data = {
-            "Root Domain": root_domain,
-            "Full Domain": full_domain,
-            "URL Length": current_features[0],
-            "Domain Length": current_features[1],
-            "HTTPS Used": "Yes" if current_features[12] == 1 else "No",
-            "Suspicious Keyword": "Yes" if current_features[14] == 1 else "No",
-            "IP Address Used": "Yes" if current_features[15] == 1 else "No",
-            "Short URL": "Yes" if current_features[16] == 1 else "No",
-            "Suspicious TLD": "Yes" if current_features[17] == 1 else "No",
-            "Query Parameters": "Yes" if current_features[18] == 1 else "No",
-            "Subdomain Count": current_features[19],
-            "Hyphen In Domain": "Yes" if current_features[20] == 1 else "No",
-            "Digit In Domain": "Yes" if current_features[21] == 1 else "No",
-            "Domain Reputation Match": "Yes" if is_trusted_domain(input_url) else "No",
-            "Model Used": "Hybrid NLP + Lexical ML",
-            "Additional Layer": "Domain Reputation + Confidence Calibration"
-        }
-
-        analysis_df = pd.DataFrame(
-            list(analysis_data.items()),
-            columns=["Analysis Point", "Value"]
-        )
-
-        st.dataframe(
-            analysis_df,
-            use_container_width=True,
-            hide_index=True
-        )
-
-    except Exception as e:
-        st.error("Current URL analysis failed.")
-        st.exception(e)
-
-    # ----------------------------
-    # Detection reasons
-    # ----------------------------
-    st.markdown("### Detection Reasons")
-
-    for reason in reasons:
-        st.markdown(f"""
-        <div class="reason-box {reason_class}">
-            {reason_icon} {reason}
-        </div>
-        """, unsafe_allow_html=True)
-
-    # ----------------------------
-    # Save scan history
-    # ----------------------------
-    st.session_state.scan_history.append({
-        "Time": datetime.now().strftime("%H:%M:%S"),
-        "URL": input_url,
-        "Risk Score": risk_score,
-        "Confidence": confidence,
-        "Status": status
-    })
+        st.metric("Confidence", f"{confidence}%")
 
 
-# ----------------------------
-# Scan history section
-# ----------------------------
-if st.session_state.scan_history:
-    st.markdown("<hr>", unsafe_allow_html=True)
-    st.markdown("## Recent Scan History")
+def build_url_analysis(url):
+    features = extract_features(url)
+    root_domain, full_domain = get_domain(url)
 
-    df = pd.DataFrame(st.session_state.scan_history)
+    return {
+        "Root Domain": root_domain,
+        "Full Domain": full_domain,
+        "URL Length": features[0],
+        "Domain Length": features[1],
+        "HTTPS Used": "Yes" if features[12] == 1 else "No",
+        "Suspicious Keyword": "Yes" if features[14] == 1 else "No",
+        "IP Address Used": "Yes" if features[15] == 1 else "No",
+        "Short URL": "Yes" if features[16] == 1 else "No",
+        "Suspicious TLD": "Yes" if features[17] == 1 else "No",
+        "Query Parameters": "Yes" if features[18] == 1 else "No",
+        "Subdomain Count": features[19],
+        "Hyphen In Domain": "Yes" if features[20] == 1 else "No",
+        "Digit In Domain": "Yes" if features[21] == 1 else "No",
+        "Trusted Domain": "Yes" if is_trusted_domain(url) else "No",
+    }
 
-    st.dataframe(
-        df,
-        use_container_width=True,
-        hide_index=True
+
+if "url_history" not in st.session_state:
+    st.session_state.url_history = []
+
+if "message_history" not in st.session_state:
+    st.session_state.message_history = []
+
+
+st.markdown(
+    '<div class="title">🛡️ BharatShield</div>',
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    '<div class="subtitle">AI-Based Fraud Detection System</div>',
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    '<div class="tagline">'
+    'Phishing URL Detection • OTP & Scam Message Detection • Explainable Risk Analysis'
+    '</div>',
+    unsafe_allow_html=True,
+)
+
+
+url_tab, message_tab = st.tabs([
+    "🔗 URL Scanner",
+    "💬 Scam Message Scanner",
+])
+
+
+with url_tab:
+    st.subheader("Phishing URL Detection")
+
+    url = st.text_input(
+        "Enter URL",
+        placeholder="https://example.com",
+        key="url_input",
     )
 
-    col_a, col_b = st.columns(2)
+    if st.button(
+        "Scan URL",
+        use_container_width=True,
+        key="scan_url",
+    ):
+        url = url.strip()
 
-    with col_a:
-        if st.button("🧹 Clear History", use_container_width=True):
-            st.session_state.scan_history = []
-            st.rerun()
+        if not url:
+            st.warning("Enter a URL first.")
 
-    with col_b:
-        csv_data = df.to_csv(index=False).encode("utf-8")
+        else:
+            try:
+                with st.spinner("Scanning URL..."):
+                    result, risk_score, reasons, confidence = predict_url(url)
 
-        st.download_button(
-            label="⬇️ Download Report CSV",
-            data=csv_data,
-            file_name="bharatshield_scan_history.csv",
-            mime="text/csv",
-            use_container_width=True
+                st.markdown("### Scan Result")
+
+                show_metrics(
+                    risk_score,
+                    result,
+                    confidence,
+                )
+
+                st.progress(risk_score / 100)
+
+                show_url_status(result)
+
+                st.markdown("### URL Analysis")
+
+                analysis = build_url_analysis(url)
+
+                analysis_df = pd.DataFrame(
+                    analysis.items(),
+                    columns=["Analysis Point", "Value"],
+                )
+
+                st.dataframe(
+                    analysis_df,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                st.markdown("### Detection Reasons")
+
+                for reason in reasons:
+                    st.write("•", reason)
+
+                st.session_state.url_history.append({
+                    "Time": datetime.now().strftime("%H:%M:%S"),
+                    "URL": url,
+                    "Risk Score": risk_score,
+                    "Confidence": confidence,
+                    "Result": result,
+                })
+
+            except Exception as error:
+                st.error("URL scanning failed.")
+                st.caption(str(error))
+
+
+    if st.session_state.url_history:
+        st.markdown("### Recent URL Scans")
+
+        url_history_df = pd.DataFrame(
+            st.session_state.url_history
         )
-
-
-# ----------------------------
-# Extra sections
-# ----------------------------
-st.markdown("<hr>", unsafe_allow_html=True)
-
-
-with st.expander("📊 View Model Analytics"):
-    evaluation_report_path = os.path.join(MODEL_DIR, "model_evaluation_report.csv")
-
-    confusion_matrix_path = os.path.join(MODEL_DIR, "confusion_matrix.png")
-    confusion_matrix_lexical_path = os.path.join(MODEL_DIR, "confusion_matrix_lexical.png")
-    confusion_matrix_hybrid_path = os.path.join(MODEL_DIR, "confusion_matrix_hybrid.png")
-    confusion_matrix_final_path = os.path.join(MODEL_DIR, "confusion_matrix_final.png")
-
-    feature_importance_path = os.path.join(MODEL_DIR, "feature_importance.png")
-
-    st.markdown("### Model Evaluation Report")
-
-    if os.path.exists(evaluation_report_path):
-        evaluation_df = pd.read_csv(evaluation_report_path)
 
         st.dataframe(
-            evaluation_df,
+            url_history_df,
             use_container_width=True,
-            hide_index=True
+            hide_index=True,
         )
-    else:
-        st.info("Model evaluation report not found. Run train_model.py first.")
 
-    st.markdown("### Confusion Matrices")
+        col1, col2 = st.columns(2)
 
-    col1, col2 = st.columns(2)
+        with col1:
+            if st.button(
+                "Clear URL History",
+                use_container_width=True,
+            ):
+                st.session_state.url_history = []
+                st.rerun()
 
-    with col1:
-        st.markdown("#### Lexical Model")
+        with col2:
+            csv_data = url_history_df.to_csv(
+                index=False
+            ).encode("utf-8")
 
-        if os.path.exists(confusion_matrix_lexical_path):
-            st.image(confusion_matrix_lexical_path, use_container_width=True)
+            st.download_button(
+                "Download URL Report",
+                data=csv_data,
+                file_name="bharatshield_url_report.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+
+
+with message_tab:
+    st.subheader("OTP & Scam Message Detection")
+
+    st.caption(
+        "Paste an SMS, WhatsApp message, or email text. "
+        "Do not paste a real OTP that is currently active."
+    )
+
+    message = st.text_area(
+        "Paste message",
+        height=160,
+        placeholder=(
+            "Example: Your SBI KYC has expired. "
+            "Verify immediately at sbi-update.xyz and enter your OTP."
+        ),
+    )
+
+    if st.button(
+        "Scan Message",
+        use_container_width=True,
+        key="scan_message",
+    ):
+        message = message.strip()
+
+        if not message:
+            st.warning("Paste a message first.")
+
         else:
-            st.info("Lexical confusion matrix not found. Run train_model.py first.")
+            try:
+                with st.spinner("Analyzing message..."):
+                    result = analyze_scam_message(
+                        message,
+                        url_predictor=predict_url,
+                    )
 
-    with col2:
-        st.markdown("#### Hybrid Model")
+                risk_score = result["risk_score"]
+                status = result["status"]
+                confidence = result["confidence"]
 
-        if os.path.exists(confusion_matrix_hybrid_path):
-            st.image(confusion_matrix_hybrid_path, use_container_width=True)
-        else:
-            st.info("Hybrid confusion matrix not found. Run train_model.py first.")
+                st.markdown("### Scan Result")
 
-    st.markdown("#### Final Calibrated System")
+                show_metrics(
+                    risk_score,
+                    status,
+                    confidence,
+                )
 
-    if os.path.exists(confusion_matrix_final_path):
-        st.image(confusion_matrix_final_path, use_container_width=True)
-    elif os.path.exists(confusion_matrix_path):
-        st.image(confusion_matrix_path, use_container_width=True)
-    else:
-        st.info("Final calibrated confusion matrix not found. Run train_model.py first.")
+                st.progress(risk_score / 100)
 
-    st.markdown("### Lexical Feature Importance")
+                show_message_status(status)
 
-    if os.path.exists(feature_importance_path):
-        st.image(feature_importance_path, use_container_width=True)
-    else:
-        st.info("Feature importance image not found. Run train_model.py first.")
+                st.markdown("### Detection Reasons")
+
+                for reason in result["reasons"]:
+                    st.write("•", reason)
+
+                requested_items = result["sensitive_items_requested"]
+
+                if requested_items:
+                    st.markdown("### Sensitive Information Requested")
+
+                    st.write(
+                        ", ".join(requested_items)
+                    )
+
+                urls = result["urls"]
+
+                if urls:
+                    st.markdown("### Links Found")
+
+                    for url_found in urls:
+                        st.code(url_found)
+
+                url_results = result["url_results"]
+
+                if url_results:
+                    st.markdown("### Embedded Link Analysis")
+
+                    for item in url_results:
+                        url_value = item.get("url", "Unknown URL")
+
+                        with st.expander(url_value):
+                            if "error" in item:
+                                st.warning(
+                                    "This link could not be scanned."
+                                )
+                            else:
+                                st.write(
+                                    "Risk Score:",
+                                    f'{item["risk_score"]}%'
+                                )
+
+                                st.write(
+                                    "Result:",
+                                    item["result"]
+                                )
+
+                                if item.get("confidence") is not None:
+                                    st.write(
+                                        "Confidence:",
+                                        f'{item["confidence"]}%'
+                                    )
+
+                                if item.get("reasons"):
+                                    st.write("Reasons:")
+
+                                    for reason in item["reasons"]:
+                                        st.write("•", reason)
+
+                st.session_state.message_history.append({
+                    "Time": datetime.now().strftime("%H:%M:%S"),
+                    "Risk Score": risk_score,
+                    "Confidence": confidence,
+                    "Status": status,
+                    "Links Found": len(urls),
+                })
+
+            except Exception as error:
+                st.error("Message scanning failed.")
+                st.caption(str(error))
+
+
+    if st.session_state.message_history:
+        st.markdown("### Recent Message Scans")
+
+        message_history_df = pd.DataFrame(
+            st.session_state.message_history
+        )
+
+        st.dataframe(
+            message_history_df,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        if st.button(
+            "Clear Message History",
+            use_container_width=True,
+        ):
+            st.session_state.message_history = []
+            st.rerun()
+
+
+st.markdown("---")
+
+
+with st.expander("📊 Model Analytics"):
+    report_path = os.path.join(
+        MODEL_DIR,
+        "model_evaluation_report.csv",
+    )
+
+    lexical_cm = os.path.join(
+        MODEL_DIR,
+        "confusion_matrix_lexical.png",
+    )
+
+    hybrid_cm = os.path.join(
+        MODEL_DIR,
+        "confusion_matrix_hybrid.png",
+    )
+
+    final_cm = os.path.join(
+        MODEL_DIR,
+        "confusion_matrix_final.png",
+    )
+
+    feature_importance = os.path.join(
+        MODEL_DIR,
+        "feature_importance.png",
+    )
+
+    if os.path.exists(report_path):
+        st.markdown("### Evaluation Report")
+
+        report = pd.read_csv(report_path)
+
+        st.dataframe(
+            report,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    if os.path.exists(lexical_cm):
+        st.markdown("### Lexical Model")
+
+        st.image(
+            lexical_cm,
+            use_container_width=True,
+        )
+
+    if os.path.exists(hybrid_cm):
+        st.markdown("### Hybrid Model")
+
+        st.image(
+            hybrid_cm,
+            use_container_width=True,
+        )
+
+    if os.path.exists(final_cm):
+        st.markdown("### Final Calibrated System")
+
+        st.image(
+            final_cm,
+            use_container_width=True,
+        )
+
+    if os.path.exists(feature_importance):
+        st.markdown("### Feature Importance")
+
+        st.image(
+            feature_importance,
+            use_container_width=True,
+        )
+
+    if not any(
+        os.path.exists(path)
+        for path in [
+            report_path,
+            lexical_cm,
+            hybrid_cm,
+            final_cm,
+            feature_importance,
+        ]
+    ):
+        st.info(
+            "Model analytics are not available yet."
+        )
 
 
 with st.expander("ℹ️ About BharatShield"):
-    st.markdown("""
-    <div class="info-card">
-    BharatShield is an AI-powered phishing URL detection system built using Python, Streamlit, NLP, and Machine Learning.
-    It follows a layered security architecture that combines raw ML scoring, lexical URL analysis,
-    NLP-based TF-IDF features, domain reputation checking, confidence calibration, and explainable risk reasons.
-    <br><br>
-    The system analyzes domain length, HTTPS usage, suspicious keywords, IP address usage, shortened links,
-    suspicious TLDs, subdomains, special characters, query parameters, and URL text patterns.
-    </div>
-    """, unsafe_allow_html=True)
+    st.write(
+        "BharatShield detects phishing URLs and scam messages "
+        "using machine learning, NLP, URL analysis, domain reputation, "
+        "and explainable security rules."
+    )
+
+    st.write(
+        "The URL engine combines lexical URL features with "
+        "TF-IDF character patterns. The message scanner checks "
+        "for OTP, PIN, password, payment, urgency, KYC, and "
+        "social-engineering signals."
+    )
 
 
-# ----------------------------
-# Footer
-# ----------------------------
-st.markdown(
-    '<div class="footer">Built with Machine Learning • NLP • Python • Streamlit • BharatShield</div>',
-    unsafe_allow_html=True
+st.caption(
+    "BharatShield • Machine Learning • NLP • Fraud Detection"
 )
