@@ -1,30 +1,43 @@
+import json
 import os
 
 import joblib
+import matplotlib
+
+matplotlib.use("Agg")
+
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import seaborn as sns
 
 from scipy.sparse import csr_matrix, hstack
+from sklearn.calibration import calibration_curve
+from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.inspection import permutation_importance
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
-    classification_report,
+    average_precision_score,
+    brier_score_loss,
     confusion_matrix,
     f1_score,
     precision_score,
     recall_score,
     roc_auc_score,
 )
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupShuffleSplit
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import MaxAbsScaler
 
 from features import extract_features
-from nlp_features import create_nlp_vectorizer, fit_transform_urls_for_nlp, clean_url_text
+from nlp_features import clean_url_text, create_nlp_vectorizer, fit_transform_urls_for_nlp
 from security_layers import (
     FEATURE_NAMES,
+    SAFE_CUTOFF,
     apply_confidence_calibration,
-    binary_label_from_risk_score,
+    get_domain,
     get_reasons_from_features,
     is_trusted_domain,
 )
@@ -34,92 +47,176 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_PATH = os.path.join(BASE_DIR, "data", "phishing.csv")
 MODEL_DIR = os.path.join(BASE_DIR, "model")
 
+SEED = 42
 
-def evaluate_predictions(name, y_true, y_pred, y_score=None):
-    accuracy = accuracy_score(y_true, y_pred)
-    precision = precision_score(y_true, y_pred, zero_division=0)
-    recall = recall_score(y_true, y_pred, zero_division=0)
-    f1 = f1_score(y_true, y_pred, zero_division=0)
+# every model is checked at this same threshold, so the comparison is fair
+EVAL_THRESHOLD = SAFE_CUTOFF
 
-    roc_auc = None
 
-    if y_score is not None:
-        try:
-            roc_auc = roc_auc_score(y_true, y_score)
-        except ValueError:
-            pass
-
-    print(f"\n{name}")
-    print("Accuracy :", round(accuracy * 100, 2), "%")
-    print("Precision:", round(precision * 100, 2), "%")
-    print("Recall   :", round(recall * 100, 2), "%")
-    print("F1 Score :", round(f1 * 100, 2), "%")
-
-    if roc_auc is not None:
-        print("ROC-AUC  :", round(roc_auc * 100, 2), "%")
-
-    print()
-    print(
-        classification_report(
-            y_true,
-            y_pred,
-            target_names=["Safe", "Phishing"],
-            zero_division=0,
-        )
+def make_key(urls):
+    # same site with http/https/www/trailing slash counts as one URL
+    return (
+        urls.str.lower()
+        .str.strip()
+        .str.replace(r"^https?://", "", regex=True)
+        .str.replace(r"^www\.", "", regex=True)
+        .str.rstrip("/")
     )
 
-    return {
-        "model_name": name,
-        "accuracy": round(accuracy * 100, 2),
-        "precision": round(precision * 100, 2),
-        "recall": round(recall * 100, 2),
-        "f1_score": round(f1 * 100, 2),
-        "roc_auc": round(roc_auc * 100, 2) if roc_auc is not None else "N/A",
-        "confusion_matrix": confusion_matrix(y_true, y_pred),
+
+def load_dataset():
+    if not os.path.exists(DATA_PATH):
+        raise FileNotFoundError(f"Dataset not found: {DATA_PATH}")
+
+    df = pd.read_csv(DATA_PATH)
+
+    if df.shape[1] < 2:
+        raise ValueError("Dataset must contain URL and label columns.")
+
+    df = df.iloc[:, :2].copy()
+    df.columns = ["url", "label"]
+
+    df = df.dropna(subset=["url", "label"])
+
+    df["url"] = df["url"].astype(str)
+    df["label"] = df["label"].astype(str).str.lower().str.strip()
+
+    label_map = {
+        "bad": 1,
+        "phishing": 1,
+        "fraud": 1,
+        "malicious": 1,
+        "unsafe": 1,
+        "1": 1,
+        "good": 0,
+        "safe": 0,
+        "legitimate": 0,
+        "benign": 0,
+        "0": 0,
     }
 
+    df["label"] = df["label"].map(label_map)
+    df = df.dropna(subset=["label"])
+    df["label"] = df["label"].astype(int)
 
-def evaluate_model(name, model, x_test, y_test):
-    predictions = model.predict(x_test)
-    scores = None
+    if df["label"].nunique() < 2:
+        raise ValueError("Dataset must contain both safe and phishing URLs.")
 
-    if hasattr(model, "predict_proba"):
-        scores = model.predict_proba(x_test)[:, 1]
+    rows_before = len(df)
 
-    return evaluate_predictions(
-        name,
-        y_test,
-        predictions,
-        scores,
+    df["key"] = make_key(df["url"])
+
+    # same URL with both labels is confusing, remove it fully
+    conflict = df.groupby("key")["label"].transform("nunique") > 1
+    df = df[~conflict]
+
+    df = df.drop_duplicates(subset="key")
+
+    print("Removed duplicate/conflicting URLs:", rows_before - len(df))
+
+    if len(df) > 100000:
+        df = df.sample(n=100000, random_state=SEED)
+
+    df = df.reset_index(drop=True)
+
+    with_scheme = df["url"].str.lower().str.startswith("http").mean()
+    print("URLs that start with http:", round(with_scheme * 100, 1), "%")
+
+    if with_scheme < 0.10:
+        print("Warning: most URLs have no scheme, so the HTTPS feature "
+              "will not teach the model much.")
+
+    df["domain"] = df["url"].apply(lambda url: get_domain(url)[0])
+
+    return df
+
+
+def split_by_domain(df, test_size):
+    # all URLs of one domain go to the same side, so the model
+    # cannot just remember domains it has already seen
+    splitter = GroupShuffleSplit(
+        n_splits=1,
+        test_size=test_size,
+        random_state=SEED,
+    )
+
+    first_idx, second_idx = next(
+        splitter.split(df, df["label"], groups=df["domain"])
+    )
+
+    return (
+        df.iloc[first_idx].reset_index(drop=True),
+        df.iloc[second_idx].reset_index(drop=True),
     )
 
 
-def evaluate_final_system(
-    urls,
-    lexical_features,
-    lexical_model,
-    hybrid_model,
-    hybrid_features,
-    y_test,
-):
-    lexical_scores = lexical_model.predict_proba(lexical_features)[:, 1]
-    hybrid_scores = hybrid_model.predict_proba(hybrid_features)[:, 1]
+def make_hybrid(lexical, nlp):
+    return hstack([csr_matrix(lexical.values), nlp]).tocsr()
 
+
+def evaluate_scores(name, y_true, scores):
+    scores = np.asarray(scores, dtype=float)
+    predictions = (scores >= EVAL_THRESHOLD).astype(int)
+
+    matrix = confusion_matrix(y_true, predictions, labels=[0, 1])
+    tn, fp, fn, tp = matrix.ravel()
+
+    fpr = fp / (fp + tn) if (fp + tn) else 0.0
+
+    result = {
+        "model_name": name,
+        "accuracy": accuracy_score(y_true, predictions),
+        "precision": precision_score(y_true, predictions, zero_division=0),
+        "recall": recall_score(y_true, predictions, zero_division=0),
+        "fpr": fpr,
+        "f1_score": f1_score(y_true, predictions, zero_division=0),
+        "roc_auc": roc_auc_score(y_true, scores),
+        "pr_auc": average_precision_score(y_true, scores),
+        "brier": brier_score_loss(y_true, scores),
+        "confusion_matrix": matrix,
+    }
+
+    print(f"\n{name}")
+    print("Accuracy :", round(result["accuracy"] * 100, 2), "%")
+    print("Precision:", round(result["precision"] * 100, 2), "%")
+    print("Recall   :", round(result["recall"] * 100, 2), "%")
+    print("FPR      :", round(result["fpr"] * 100, 2), "%")
+    print("F1 Score :", round(result["f1_score"] * 100, 2), "%")
+    print("PR-AUC   :", round(result["pr_auc"] * 100, 2), "%")
+    print("Confusion matrix [[TN FP] [FN TP]]:", matrix.tolist())
+
+    return result
+
+
+def pick_lexical_weight(lexical_scores, hybrid_scores, y_val):
+    # try different weights on the validation set (not the test set)
+    results = []
+
+    for weight in np.arange(0, 1.01, 0.1):
+        blend = weight * lexical_scores + (1 - weight) * hybrid_scores
+        score = round(average_precision_score(y_val, blend), 4)
+        results.append((score, float(weight)))
+
+    best_score = max(score for score, weight in results)
+
+    # if many weights are equally good, take the one closest to 0.5
+    best_weights = [weight for score, weight in results if score == best_score]
+    best_weight = min(best_weights, key=lambda weight: abs(weight - 0.5))
+
+    return round(best_weight, 1)
+
+
+def final_system_scores(urls, lexical, raw_scores):
     final_scores = []
 
     for i, url in enumerate(urls):
-        features = lexical_features.iloc[i].tolist()
-
-        raw_risk = (
-            0.70 * lexical_scores[i]
-            + 0.30 * hybrid_scores[i]
-        )
+        features = lexical.iloc[i].tolist()
 
         reasons = get_reasons_from_features(url, features)
         trusted = is_trusted_domain(url)
 
         final_risk = apply_confidence_calibration(
-            raw_ml_risk=raw_risk,
+            raw_ml_risk=raw_scores[i],
             features=features,
             reasons=reasons,
             trusted=trusted,
@@ -127,17 +224,7 @@ def evaluate_final_system(
 
         final_scores.append(final_risk)
 
-    predictions = [
-        binary_label_from_risk_score(score)
-        for score in final_scores
-    ]
-
-    return evaluate_predictions(
-        "Final Calibrated System",
-        y_test,
-        predictions,
-        final_scores,
-    )
+    return np.array(final_scores)
 
 
 def save_confusion_matrix(matrix, title, file_name):
@@ -156,112 +243,92 @@ def save_confusion_matrix(matrix, title, file_name):
     plt.ylabel("Actual")
     plt.title(title)
     plt.tight_layout()
-
-    path = os.path.join(MODEL_DIR, file_name)
-
-    plt.savefig(path)
+    plt.savefig(os.path.join(MODEL_DIR, file_name))
     plt.close()
 
 
-def load_dataset():
-    if not os.path.exists(DATA_PATH):
-        raise FileNotFoundError(
-            f"Dataset not found: {DATA_PATH}"
-        )
-
-    df = pd.read_csv(DATA_PATH)
-
-    if df.shape[1] < 2:
-        raise ValueError(
-            "Dataset must contain URL and label columns."
-        )
-
-    df = df.iloc[:, :2].copy()
-    df.columns = ["url", "label"]
-
-    df = df.dropna(
-        subset=["url", "label"]
+def save_reliability_curve(y_true, scores, file_name):
+    frac_positive, mean_predicted = calibration_curve(
+        y_true,
+        scores,
+        n_bins=10,
     )
 
-    df["url"] = df["url"].astype(str)
+    plt.figure(figsize=(5, 5))
+    plt.plot([0, 1], [0, 1], "--", label="Perfect")
+    plt.plot(mean_predicted, frac_positive, marker="o", label="ML blend")
+    plt.xlabel("Predicted phishing probability")
+    plt.ylabel("Actual phishing fraction")
+    plt.title("Reliability curve (test set)")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(MODEL_DIR, file_name))
+    plt.close()
 
-    df["label"] = (
-        df["label"]
-        .astype(str)
-        .str.lower()
-        .str.strip()
+
+def save_feature_importance(model, x_val, y_val, file_name):
+    if len(x_val) > 5000:
+        x_val = x_val.sample(n=5000, random_state=SEED)
+        y_val = y_val.loc[x_val.index]
+
+    result = permutation_importance(
+        model,
+        x_val,
+        y_val,
+        scoring="average_precision",
+        n_repeats=5,
+        random_state=SEED,
+        n_jobs=-1,
     )
 
-    label_map = {
-        "bad": 1,
-        "phishing": 1,
-        "fraud": 1,
-        "malicious": 1,
-        "unsafe": 1,
-        "1": 1,
+    importance = pd.DataFrame({
+        "Feature": FEATURE_NAMES,
+        "Importance": result.importances_mean,
+    }).sort_values("Importance")
 
-        "good": 0,
-        "safe": 0,
-        "legitimate": 0,
-        "benign": 0,
-        "0": 0,
-    }
-
-    df["label"] = df["label"].map(label_map)
-    df = df.dropna(subset=["label"])
-
-    df["label"] = df["label"].astype(int)
-
-    if df["label"].nunique() < 2:
-        raise ValueError(
-            "Dataset must contain both safe and phishing URLs."
-        )
-
-    if len(df) > 100000:
-        df = df.sample(
-            n=100000,
-            random_state=42,
-        )
-
-    return df
+    plt.figure(figsize=(8, 7))
+    plt.barh(importance["Feature"], importance["Importance"])
+    plt.xlabel("Drop in PR-AUC when feature is shuffled")
+    plt.title("Lexical Feature Importance (permutation, validation set)")
+    plt.tight_layout()
+    plt.savefig(os.path.join(MODEL_DIR, file_name))
+    plt.close()
 
 
 def main():
-    os.makedirs(
-        MODEL_DIR,
-        exist_ok=True,
-    )
+    os.makedirs(MODEL_DIR, exist_ok=True)
 
     print("Loading dataset...")
-
     df = load_dataset()
 
     print("Dataset size:", len(df))
     print(df["label"].value_counts())
 
-    x_train_url, x_test_url, y_train, y_test = train_test_split(
-        df["url"],
-        df["label"],
-        test_size=0.20,
-        random_state=42,
-        stratify=df["label"],
-    )
+    train_val_df, test_df = split_by_domain(df, test_size=0.20)
+    train_df, val_df = split_by_domain(train_val_df, test_size=0.20)
 
-    x_train_url = x_train_url.reset_index(drop=True)
-    x_test_url = x_test_url.reset_index(drop=True)
+    for name, part in [("Train", train_df), ("Validation", val_df), ("Test", test_df)]:
+        if part["label"].nunique() < 2:
+            raise ValueError(f"{name} split has only one class.")
 
-    y_train = y_train.reset_index(drop=True)
-    y_test = y_test.reset_index(drop=True)
+        print(name, "size:", len(part), "| phishing %:", round(part["label"].mean() * 100, 1))
+
+    y_train = train_df["label"]
+    y_val = val_df["label"]
+    y_test = test_df["label"]
 
     print("\nExtracting lexical features...")
 
     x_train_lexical = pd.DataFrame(
-        x_train_url.apply(extract_features).tolist(),
+        train_df["url"].apply(extract_features).tolist(),
         columns=FEATURE_NAMES,
     )
-
+    x_val_lexical = pd.DataFrame(
+        val_df["url"].apply(extract_features).tolist(),
+        columns=FEATURE_NAMES,
+    )
     x_test_lexical = pd.DataFrame(
-        x_test_url.apply(extract_features).tolist(),
+        test_df["url"].apply(extract_features).tolist(),
         columns=FEATURE_NAMES,
     )
 
@@ -269,187 +336,121 @@ def main():
 
     vectorizer = create_nlp_vectorizer()
 
-    x_train_nlp = fit_transform_urls_for_nlp(
-        x_train_url,
-        vectorizer,
-    )
+    x_train_nlp = fit_transform_urls_for_nlp(train_df["url"], vectorizer)
+    x_val_nlp = vectorizer.transform(val_df["url"].apply(clean_url_text))
+    x_test_nlp = vectorizer.transform(test_df["url"].apply(clean_url_text))
 
-    cleaned_test_urls = x_test_url.apply(
-        clean_url_text
-    )
-
-    x_test_nlp = vectorizer.transform(
-        cleaned_test_urls
-    )
-
-    x_train_hybrid = hstack([
-        csr_matrix(x_train_lexical.values),
-        x_train_nlp,
-    ])
-
-    x_test_hybrid = hstack([
-        csr_matrix(x_test_lexical.values),
-        x_test_nlp,
-    ])
+    x_train_hybrid = make_hybrid(x_train_lexical, x_train_nlp)
+    x_val_hybrid = make_hybrid(x_val_lexical, x_val_nlp)
+    x_test_hybrid = make_hybrid(x_test_lexical, x_test_nlp)
 
     print("Training Random Forest...")
 
     lexical_model = RandomForestClassifier(
-        n_estimators=60,
+        n_estimators=200,
         max_depth=18,
-        random_state=42,
+        random_state=SEED,
         class_weight="balanced",
         n_jobs=-1,
     )
-
-    lexical_model.fit(
-        x_train_lexical,
-        y_train,
-    )
+    lexical_model.fit(x_train_lexical, y_train)
 
     print("Training hybrid Logistic Regression...")
 
-    hybrid_model = LogisticRegression(
-        max_iter=1000,
-        class_weight="balanced",
+    # lexical columns have big values (url length) and tf-idf is 0 to 1,
+    # so lexical columns are scaled first
+    scaler = ColumnTransformer(
+        [("lexical", MaxAbsScaler(), list(range(len(FEATURE_NAMES))))],
+        remainder="passthrough",
+        sparse_threshold=1.0,
     )
 
-    hybrid_model.fit(
-        x_train_hybrid,
-        y_train,
+    hybrid_model = Pipeline([
+        ("scale", scaler),
+        ("lr", LogisticRegression(max_iter=2000, class_weight="balanced")),
+    ])
+    hybrid_model.fit(x_train_hybrid, y_train)
+
+    val_lexical_scores = lexical_model.predict_proba(x_val_lexical)[:, 1]
+    val_hybrid_scores = hybrid_model.predict_proba(x_val_hybrid)[:, 1]
+
+    lexical_weight = pick_lexical_weight(val_lexical_scores, val_hybrid_scores, y_val)
+    hybrid_weight = round(1 - lexical_weight, 1)
+
+    print("\nBest weights on validation set -> lexical:", lexical_weight, "hybrid:", hybrid_weight)
+
+    test_lexical_scores = lexical_model.predict_proba(x_test_lexical)[:, 1]
+    test_hybrid_scores = hybrid_model.predict_proba(x_test_hybrid)[:, 1]
+
+    test_ml_scores = (
+        lexical_weight * test_lexical_scores
+        + hybrid_weight * test_hybrid_scores
     )
 
-    lexical_result = evaluate_model(
-        "Lexical Random Forest Model",
-        lexical_model,
+    test_final_scores = final_system_scores(
+        test_df["url"],
         x_test_lexical,
-        y_test,
+        test_ml_scores,
     )
 
-    hybrid_result = evaluate_model(
-        "Hybrid NLP + Lexical Logistic Regression Model",
-        hybrid_model,
-        x_test_hybrid,
-        y_test,
-    )
+    print("\nAll results below are on the test set, threshold =", EVAL_THRESHOLD)
 
-    final_result = evaluate_final_system(
-        x_test_url,
-        x_test_lexical,
-        lexical_model,
-        hybrid_model,
-        x_test_hybrid,
-        y_test,
-    )
+    lexical_result = evaluate_scores("Lexical Random Forest Model", y_test, test_lexical_scores)
+    hybrid_result = evaluate_scores("Hybrid NLP + Lexical Logistic Regression Model", y_test, test_hybrid_scores)
+    ml_only_result = evaluate_scores("ML only (lexical + hybrid blend)", y_test, test_ml_scores)
+    final_result = evaluate_scores("Final System (ML + rules)", y_test, test_final_scores)
 
-    results = [
-        lexical_result,
-        hybrid_result,
-        final_result,
-    ]
+    results = [lexical_result, hybrid_result, ml_only_result, final_result]
+
+    print("\nEffect of rules (ML only -> ML + rules)")
+    print("F1 :", round(ml_only_result["f1_score"] * 100, 2), "->", round(final_result["f1_score"] * 100, 2))
+    print("FPR:", round(ml_only_result["fpr"] * 100, 2), "->", round(final_result["fpr"] * 100, 2))
 
     report_rows = []
 
     for result in results:
         report_rows.append({
             "Model": result["model_name"],
-            "Accuracy": result["accuracy"],
-            "Precision": result["precision"],
-            "Recall": result["recall"],
-            "F1 Score": result["f1_score"],
-            "ROC-AUC": result["roc_auc"],
+            "Threshold": EVAL_THRESHOLD,
+            "Accuracy": round(result["accuracy"] * 100, 2),
+            "Precision": round(result["precision"] * 100, 2),
+            "Recall": round(result["recall"] * 100, 2),
+            "FPR": round(result["fpr"] * 100, 2),
+            "F1 Score": round(result["f1_score"] * 100, 2),
+            "ROC-AUC": round(result["roc_auc"] * 100, 2),
+            "PR-AUC": round(result["pr_auc"] * 100, 2),
+            "Brier": round(result["brier"], 4),
         })
 
     report = pd.DataFrame(report_rows)
+    report.to_csv(os.path.join(MODEL_DIR, "model_evaluation_report.csv"), index=False)
 
-    report.to_csv(
-        os.path.join(
-            MODEL_DIR,
-            "model_evaluation_report.csv",
-        ),
-        index=False,
-    )
+    joblib.dump(lexical_model, os.path.join(MODEL_DIR, "phishing_model.pkl"))
+    joblib.dump(vectorizer, os.path.join(MODEL_DIR, "nlp_model.pkl"))
+    joblib.dump(hybrid_model, os.path.join(MODEL_DIR, "hybrid_model.pkl"))
 
-    joblib.dump(
-        lexical_model,
-        os.path.join(
-            MODEL_DIR,
-            "phishing_model.pkl",
-        ),
-    )
-
-    joblib.dump(
-        vectorizer,
-        os.path.join(
-            MODEL_DIR,
-            "nlp_model.pkl",
-        ),
-    )
-
-    joblib.dump(
-        hybrid_model,
-        os.path.join(
-            MODEL_DIR,
-            "hybrid_model.pkl",
-        ),
-    )
-
-    save_confusion_matrix(
-        lexical_result["confusion_matrix"],
-        "Lexical Random Forest Model",
-        "confusion_matrix_lexical.png",
-    )
-
-    save_confusion_matrix(
-        hybrid_result["confusion_matrix"],
-        "Hybrid NLP + Lexical Model",
-        "confusion_matrix_hybrid.png",
-    )
-
-    save_confusion_matrix(
-        final_result["confusion_matrix"],
-        "Final Calibrated System",
-        "confusion_matrix_final.png",
-    )
-
-    save_confusion_matrix(
-        hybrid_result["confusion_matrix"],
-        "Hybrid NLP + Lexical Model",
-        "confusion_matrix.png",
-    )
-
-    feature_importance = pd.DataFrame({
-        "Feature": FEATURE_NAMES,
-        "Importance": lexical_model.feature_importances_,
-    })
-
-    feature_importance = feature_importance.sort_values(
-        "Importance"
-    )
-
-    plt.figure(figsize=(8, 7))
-
-    plt.barh(
-        feature_importance["Feature"],
-        feature_importance["Importance"],
-    )
-
-    plt.xlabel("Importance")
-    plt.title("Lexical Feature Importance")
-    plt.tight_layout()
-
-    plt.savefig(
-        os.path.join(
-            MODEL_DIR,
-            "feature_importance.png",
+    with open(os.path.join(MODEL_DIR, "model_config.json"), "w") as file:
+        json.dump(
+            {
+                "lexical_weight": lexical_weight,
+                "hybrid_weight": hybrid_weight,
+            },
+            file,
+            indent=2,
         )
-    )
 
-    plt.close()
+    save_confusion_matrix(lexical_result["confusion_matrix"], "Lexical Random Forest Model", "confusion_matrix_lexical.png")
+    save_confusion_matrix(hybrid_result["confusion_matrix"], "Hybrid NLP + Lexical Model", "confusion_matrix_hybrid.png")
+    save_confusion_matrix(final_result["confusion_matrix"], "Final System (ML + rules)", "confusion_matrix_final.png")
+    save_confusion_matrix(final_result["confusion_matrix"], "Final System (ML + rules)", "confusion_matrix.png")
+
+    save_reliability_curve(y_test, test_ml_scores, "reliability_curve.png")
+    save_feature_importance(lexical_model, x_val_lexical, y_val, "feature_importance.png")
 
     print("\nTraining completed.")
     print()
     print(report.to_string(index=False))
+    print("\nNote: predict.py must use the same weights (model/model_config.json).")
 
 
 if __name__ == "__main__":
