@@ -12,8 +12,8 @@ if SRC_DIR not in sys.path:
     sys.path.append(SRC_DIR)
 
 
-from predict import predict_url
-from scam_message import analyze_scam_message
+from predict import MAX_URL_LENGTH, predict_url
+from scam_message import MAX_MESSAGE_LENGTH, analyze_scam_message
 from security_layers import get_domain, is_trusted_domain
 
 
@@ -44,7 +44,9 @@ def home():
 @app.get("/health")
 def health():
     return {
-        "status": "ok"
+        "status": "ok",
+        "max_url_length": MAX_URL_LENGTH,
+        "max_message_length": MAX_MESSAGE_LENGTH,
     }
 
 
@@ -56,6 +58,12 @@ def scan_url(request: URLRequest):
         raise HTTPException(
             status_code=400,
             detail="URL cannot be empty",
+        )
+
+    if len(url) > MAX_URL_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"URL cannot be longer than {MAX_URL_LENGTH} characters",
         )
 
     try:
@@ -95,6 +103,15 @@ def scan_message(request: MessageRequest):
         raise HTTPException(
             status_code=400,
             detail="Message cannot be empty",
+        )
+
+    if len(message) > MAX_MESSAGE_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Message cannot be longer than "
+                f"{MAX_MESSAGE_LENGTH} characters"
+            ),
         )
 
     try:
