@@ -40,6 +40,24 @@ class TestScamMessage(unittest.TestCase):
             ["https://example.com/login"]
         )
 
+    def test_shortened_url_extraction(self):
+        urls = extract_urls(
+            "Track reward here bit.ly/claim-now before midnight."
+        )
+
+        self.assertEqual(
+            urls,
+            ["https://bit.ly/claim-now"]
+        )
+
+    def test_remote_access_request(self):
+        result = analyze_scam_message(
+            "Install AnyDesk app for KYC verification and share your OTP."
+        )
+
+        self.assertEqual(result["status"], "Likely Fraud")
+        self.assertIn("remote_access", result["signals"])
+
     def test_suspicious_link_message(self):
         def fake_predictor(url):
             return (
