@@ -1,3 +1,4 @@
+import ipaddress
 import re
 from urllib.parse import urlparse
 
@@ -17,6 +18,7 @@ SHORTENERS = [
     "rebrand.ly",
     "tiny.cc",
     "lnkd.in",
+    "rb.gy",
 ]
 
 
@@ -61,81 +63,97 @@ SUSPICIOUS_TLDS = [
 ]
 
 
-def has_ip_address(url):
-    host = url.split("//")[-1]
-    host = host.split("/")[0]
-    host = host.split("?")[0]
+def add_scheme(url):
+    # if user did not type http/https, assume https
+    if "://" in url:
+        return url
 
-    pattern = r"^(\d{1,3}\.){3}\d{1,3}(:\d+)?$"
+    if url.startswith("//"):
+        return "https:" + url
 
-    return 1 if re.match(pattern, host) else 0
+    return "https://" + url
 
 
-def is_short_url(url):
-    extracted = tldextract.extract(url.lower())
+def parse_url(url):
+    try:
+        parsed = urlparse(url)
+        parsed.hostname
+        return parsed
+    except ValueError:
+        return urlparse("")
 
-    domain_parts = [
-        part
-        for part in [extracted.domain, extracted.suffix]
-        if part
-    ]
 
-    root_domain = ".".join(domain_parts)
+def has_ip_address(host):
+    if not host:
+        return 0
+
+    try:
+        ipaddress.ip_address(host)
+        return 1
+    except ValueError:
+        pass
+
+    # hex (0x7f000001) and decimal (2130706433) style IPs
+    if re.fullmatch(r"0x[0-9a-f]+", host):
+        return 1
+
+    if re.fullmatch(r"\d{8,10}", host):
+        return 1
+
+    return 0
+
+
+def is_short_url(domain, suffix):
+    root_domain = ".".join(part for part in [domain, suffix] if part)
 
     return 1 if root_domain in SHORTENERS else 0
 
 
 def has_suspicious_keyword(url):
-    url = url.lower()
+    tokens = re.split(r"[^a-z0-9]+", url)
 
     for word in SUSPICIOUS_WORDS:
-        if word in url:
+        if len(word) >= 5:
+            if word in url:
+                return 1
+
+        # short words only as a full word, so otp does not match hotpot
+        elif word in tokens:
             return 1
 
     return 0
 
 
-def has_suspicious_tld(url):
-    extracted = tldextract.extract(url.lower())
-    tld = extracted.suffix.lower()
+def has_suspicious_tld(suffix):
+    last_part = suffix.split(".")[-1]
 
-    return 1 if tld in SUSPICIOUS_TLDS else 0
+    return 1 if last_part in SUSPICIOUS_TLDS else 0
 
 
 def extract_features(url):
-    """
-    Extract lexical features from a URL.
-
-    Important:
-    The feature order must remain the same because the trained
-    machine-learning model expects these features in this order.
-    """
-
+    # feature order must stay same as FEATURE_NAMES in security_layers.py
     url = str(url).strip()
     url_lower = url.lower()
 
-    parsed_url = urlparse(url_lower)
-    extracted = tldextract.extract(url_lower)
+    full_url = add_scheme(url_lower)
+
+    parsed_url = parse_url(full_url)
+    extracted = tldextract.extract(full_url)
+
+    host = parsed_url.hostname or ""
 
     domain = extracted.domain
     subdomain = extracted.subdomain
     suffix = extracted.suffix
 
-    domain_parts = [
-        part
-        for part in [subdomain, domain, suffix]
-        if part
-    ]
-
+    domain_parts = [part for part in [subdomain, domain, suffix] if part]
     full_domain = ".".join(domain_parts)
 
     features = [
-        # Length features
         len(url_lower),
         len(domain),
         len(full_domain),
 
-        # Character counts
         url_lower.count("."),
         url_lower.count("-"),
         url_lower.count("/"),
@@ -146,16 +164,14 @@ def extract_features(url):
         sum(char.isdigit() for char in url_lower),
         sum(not char.isalnum() for char in url_lower),
 
-        # URL flags
         1 if parsed_url.scheme == "https" else 0,
         1 if "@" in url_lower else 0,
         has_suspicious_keyword(url_lower),
-        has_ip_address(url_lower),
-        is_short_url(url_lower),
-        has_suspicious_tld(url_lower),
+        has_ip_address(host),
+        is_short_url(domain, suffix),
+        has_suspicious_tld(suffix),
         1 if parsed_url.query else 0,
 
-        # Domain structure
         len(subdomain.split(".")) if subdomain else 0,
         1 if "-" in domain else 0,
         1 if any(char.isdigit() for char in domain) else 0,
