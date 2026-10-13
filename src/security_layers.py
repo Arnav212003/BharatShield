@@ -1,29 +1,19 @@
 import json
 import os
+import warnings
+from functools import lru_cache
+from urllib.parse import parse_qs, urlparse
 
 import tldextract
 
 from features import extract_features
 
 
-# --------------------------------------------------
-# Project paths
-# --------------------------------------------------
-
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-TRUSTED_DOMAINS_FILE = os.path.join(
-    BASE_DIR,
-    "config",
-    "trusted_domains.json",
-)
+TRUSTED_DOMAINS_FILE = os.path.join(BASE_DIR, "config", "trusted_domains.json")
 
 
-# --------------------------------------------------
-# Feature names
-# --------------------------------------------------
-# This order must match extract_features() exactly.
-
+# order must match extract_features()
 FEATURE_NAMES = [
     "URL Length",
     "Domain Length",
@@ -50,39 +40,22 @@ FEATURE_NAMES = [
 ]
 
 
-# --------------------------------------------------
-# Risk thresholds
-# --------------------------------------------------
-
 SAFE_CUTOFF = 0.35
 PHISHING_CUTOFF = 0.70
 
-
-# --------------------------------------------------
-# Risk calibration settings
-# --------------------------------------------------
-
+# hand tuned, still need ablation to check these
 TRUSTED_DOMAIN_MAX_RISK = 0.18
-
 NO_PATTERN_REDUCTION = 0.45
-
+NO_PATTERN_ML_LIMIT = 0.50
 TWO_STRONG_REASON_BONUS = 0.15
 THREE_STRONG_REASON_BONUS = 0.10
 
 
-# --------------------------------------------------
-# Default trusted domains
-# --------------------------------------------------
-
+# companies that own every subdomain, so the whole root domain is trusted
 DEFAULT_TRUSTED_DOMAINS = [
-    "google.com",
     "openai.com",
     "chatgpt.com",
-    "github.com",
-    "githubusercontent.com",
     "camsonline.com",
-    "digital.camsonline.com",
-    "newmycams.camsonline.com",
     "jioblackrockamc.com",
     "jiofinance.com",
     "icicibank.com",
@@ -91,15 +64,65 @@ DEFAULT_TRUSTED_DOMAINS = [
     "onlinesbi.sbi",
 ]
 
+# big platforms where users can also host content. only the exact
+# hosts below are trusted for these, never the whole domain
+PLATFORM_DOMAINS = [
+    "google.com",
+    "github.com",
+]
+
+TRUSTED_HOSTS = [
+    "google.com",
+    "www.google.com",
+    "accounts.google.com",
+    "mail.google.com",
+    "myaccount.google.com",
+    "support.google.com",
+    "docs.github.com",
+]
+
+# anyone can host a page here, so never trust these
+USER_CONTENT_HOSTS = [
+    "sites.google.com",
+    "docs.google.com",
+    "drive.google.com",
+    "forms.gle",
+    "storage.googleapis.com",
+    "googleusercontent.com",
+    "githubusercontent.com",
+    "github.io",
+    "web.app",
+    "firebaseapp.com",
+    "pages.dev",
+    "netlify.app",
+    "vercel.app",
+    "herokuapp.com",
+    "onrender.com",
+    "glitch.me",
+    "blogspot.com",
+    "weebly.com",
+    "wixsite.com",
+    "notion.site",
+]
+
+REDIRECT_PATHS = ["/url", "/redirect", "/redirector", "/away", "/out"]
+
+REDIRECT_PATH_PREFIXES = ["/amp/"]
+
+REDIRECT_KEYS = [
+    "url",
+    "q",
+    "u",
+    "redirect",
+    "redirect_url",
+    "continue",
+    "dest",
+    "goto",
+    "next",
+]
+
 
 def load_trusted_domains():
-    """
-    Load trusted domains from config/trusted_domains.json.
-
-    If the file does not exist or cannot be read,
-    the default trusted-domain list is used.
-    """
-
     if not os.path.exists(TRUSTED_DOMAINS_FILE):
         return DEFAULT_TRUSTED_DOMAINS.copy()
 
@@ -107,20 +130,20 @@ def load_trusted_domains():
         with open(TRUSTED_DOMAINS_FILE, "r", encoding="utf-8") as file:
             domains = json.load(file)
 
-        cleaned_domains = []
+        cleaned = []
 
         for domain in domains:
             if isinstance(domain, str):
                 domain = domain.lower().strip()
 
                 if domain:
-                    cleaned_domains.append(domain)
+                    cleaned.append(domain)
 
-        if cleaned_domains:
-            return cleaned_domains
+        if cleaned:
+            return cleaned
 
-    except (OSError, json.JSONDecodeError, TypeError):
-        pass
+    except (OSError, json.JSONDecodeError, TypeError) as error:
+        warnings.warn(f"trusted_domains.json not loaded: {error}")
 
     return DEFAULT_TRUSTED_DOMAINS.copy()
 
@@ -128,183 +151,207 @@ def load_trusted_domains():
 TRUSTED_DOMAINS = load_trusted_domains()
 
 
-# --------------------------------------------------
-# Domain helpers
-# --------------------------------------------------
+@lru_cache(maxsize=2048)
+def split_domain(url_text):
+    extracted = tldextract.extract(url_text)
+    return extracted.subdomain, extracted.domain, extracted.suffix
+
 
 def get_domain(url):
-    """
-    Return root domain and full domain.
-
-    Example:
-    https://login.example.com/page
-
-    root domain -> example.com
-    full domain -> login.example.com
-    """
-
-    extracted = tldextract.extract(str(url).lower().strip())
-
-    domain = extracted.domain
-    suffix = extracted.suffix
-    subdomain = extracted.subdomain
+    subdomain, domain, suffix = split_domain(str(url).lower().strip())
 
     if suffix:
         root_domain = f"{domain}.{suffix}"
     else:
         root_domain = domain
 
-    parts = [
-        part
-        for part in [subdomain, domain, suffix]
-        if part
-    ]
-
+    parts = [part for part in [subdomain, domain, suffix] if part]
     full_domain = ".".join(parts)
 
     return root_domain, full_domain
 
 
+def parse_with_scheme(url):
+    url = str(url).lower().strip()
+
+    if "://" not in url:
+        url = "http://" + url
+
+    try:
+        return urlparse(url)
+    except ValueError:
+        return None
+
+
+def get_hostname(url):
+    parsed = parse_with_scheme(url)
+
+    if parsed is None:
+        return ""
+
+    try:
+        return parsed.hostname or ""
+    except ValueError:
+        return ""
+
+
+def is_user_content_host(url):
+    hostname = get_hostname(url)
+
+    for host in USER_CONTENT_HOSTS:
+        if hostname == host or hostname.endswith("." + host):
+            return True
+
+    return False
+
+
+def is_redirect_link(url):
+    # true when the link sends the user to some other website
+    parsed = parse_with_scheme(url)
+
+    if parsed is None:
+        return False
+
+    path = parsed.path.rstrip("/")
+
+    if path in REDIRECT_PATHS or any(
+        parsed.path.startswith(prefix) for prefix in REDIRECT_PATH_PREFIXES
+    ):
+        # on a redirect style path, any domain-like value is suspicious
+        for key in REDIRECT_KEYS:
+            for value in parse_qs(parsed.query).get(key, []):
+                if value.startswith("http") or "." in value:
+                    return True
+
+        if parsed.path.startswith("/amp/"):
+            return True
+
+    own_root = get_domain(url)[0]
+
+    # on any path, a full link to a different site in the query is a redirect
+    for values in parse_qs(parsed.query).values():
+        for value in values:
+            value = value.lower().strip()
+
+            if value.startswith(("http://", "https://", "//")):
+                if get_domain(value)[0] != own_root:
+                    return True
+
+    return False
+
+
 def is_trusted_domain(url):
-    """
-    Check whether the URL belongs to a trusted official domain.
-    """
+    if is_user_content_host(url):
+        return False
+
+    if is_redirect_link(url):
+        return False
 
     root_domain, full_domain = get_domain(url)
 
-    return (
-        root_domain in TRUSTED_DOMAINS
-        or full_domain in TRUSTED_DOMAINS
-    )
+    if root_domain in PLATFORM_DOMAINS:
+        return get_hostname(url) in TRUSTED_HOSTS
+
+    return root_domain in TRUSTED_DOMAINS or full_domain in TRUSTED_DOMAINS
 
 
-# --------------------------------------------------
-# Detection reasons
-# --------------------------------------------------
+REASON_TEXT = {
+    "no_https": "No HTTPS found",
+    "keyword": "Suspicious keyword found",
+    "ip_address": "IP address used in URL",
+    "short_url": "Shortened URL detected",
+    "suspicious_tld": "Suspicious domain extension found",
+    "long_url": "URL is too long",
+    "many_slashes": "Too many slashes",
+    "many_digits": "Many digits found in URL",
+    "at_symbol": "@ symbol found in URL",
+    "query": "URL contains query parameters",
+    "many_subdomains": "Too many subdomains",
+    "hyphen_domain": "Hyphen found in domain name",
+    "digit_domain": "Digit found in domain name",
+    "trusted_domain": "Trusted official domain detected",
+    "no_pattern": "No major suspicious pattern found",
+}
 
-def get_reasons_from_features(url, features):
-    """
-    Create simple human-readable reasons from URL features.
-    """
+STRONG_REASON_CODES = [
+    "no_https",
+    "keyword",
+    "suspicious_tld",
+    "ip_address",
+    "short_url",
+    "at_symbol",
+]
 
-    features = list(features)
+STRONG_REASONS = [REASON_TEXT[code] for code in STRONG_REASON_CODES]
 
-    reasons = []
 
+def get_reason_codes(url, features):
+    f = dict(zip(FEATURE_NAMES, features))
     trusted = is_trusted_domain(url)
 
-    # No HTTPS
-    if features[12] == 0:
-        reasons.append("No HTTPS found")
+    codes = []
 
-    # Suspicious words such as login, verify, OTP, KYC etc.
-    if features[14] == 1 and not trusted:
-        reasons.append("Suspicious keyword found")
+    if f["HTTPS"] == 0:
+        codes.append("no_https")
 
-    # IP address instead of normal domain
-    if features[15] == 1:
-        reasons.append("IP address used in URL")
+    if f["Suspicious Keyword"] == 1 and not trusted:
+        codes.append("keyword")
 
-    # Shortened URL
-    if features[16] == 1:
-        reasons.append("Shortened URL detected")
+    if f["IP Address"] == 1:
+        codes.append("ip_address")
 
-    # Suspicious domain extension
-    if features[17] == 1:
-        reasons.append("Suspicious domain extension found")
+    if f["Short URL"] == 1:
+        codes.append("short_url")
 
-    # Very long URL
-    if features[0] > 75 and not trusted:
-        reasons.append("URL is too long")
+    if f["Suspicious TLD"] == 1:
+        codes.append("suspicious_tld")
 
-    # Too many hyphens
-    if features[4] >= 2 and not trusted:
-        reasons.append("Too many hyphens")
+    if f["URL Length"] > 75 and not trusted:
+        codes.append("long_url")
 
-    # Too many dots
-    if features[3] > 4 and not trusted:
-        reasons.append("Too many dots/subdomains")
+    if f["Slashes"] > 6 and not trusted:
+        codes.append("many_slashes")
 
-    # Too many slash sections
-    if features[5] > 6 and not trusted:
-        reasons.append("Too many slashes")
+    if f["Digits"] >= 15 and not trusted:
+        codes.append("many_digits")
 
-    # Large number of digits
-    if features[10] >= 15 and not trusted:
-        reasons.append("Many digits found in URL")
+    if f["Has @ Symbol"] == 1:
+        codes.append("at_symbol")
 
-    # @ symbol can hide real destination
-    if features[13] == 1:
-        reasons.append("@ symbol found in URL")
+    if f["Has Query"] == 1 and not trusted:
+        codes.append("query")
 
-    # Query parameters
-    if features[18] == 1 and not trusted:
-        reasons.append("URL contains query parameters")
+    if f["Subdomain Count"] >= 3 and not trusted:
+        codes.append("many_subdomains")
 
-    # Many subdomains
-    if features[19] >= 3 and not trusted:
-        reasons.append("Too many subdomains")
+    if f["Hyphen In Domain"] == 1 and not trusted:
+        codes.append("hyphen_domain")
 
-    # Hyphen inside domain name
-    if features[20] == 1 and not trusted:
-        reasons.append("Hyphen found in domain name")
-
-    # Digit inside domain name
-    if features[21] == 1 and not trusted:
-        reasons.append("Digit found in domain name")
+    if f["Digit In Domain"] == 1 and not trusted:
+        codes.append("digit_domain")
 
     if trusted:
-        reasons.append("Trusted official domain detected")
+        codes.append("trusted_domain")
 
-    if not reasons:
-        reasons.append("No major suspicious pattern found")
+    if not codes:
+        codes.append("no_pattern")
 
-    return reasons
+    return codes
+
+
+def get_reasons_from_features(url, features):
+    codes = get_reason_codes(url, features)
+    return [REASON_TEXT[code] for code in codes]
 
 
 def get_reasons(url):
-    """
-    Extract URL features and return detection reasons.
-    """
-
     features = extract_features(url)
-
     return get_reasons_from_features(url, features)
 
 
-# --------------------------------------------------
-# Strong phishing indicators
-# --------------------------------------------------
-
-STRONG_REASONS = [
-    "No HTTPS found",
-    "Suspicious keyword found",
-    "Suspicious domain extension found",
-    "IP address used in URL",
-    "Shortened URL detected",
-    "@ symbol found in URL",
-]
-
-
-# --------------------------------------------------
-# Risk calibration
-# --------------------------------------------------
-
-def apply_confidence_calibration(
-    raw_ml_risk,
-    features,
-    reasons,
-    trusted,
-):
-    """
-    Adjust the raw ML risk using simple security rules.
-
-    raw_ml_risk must be between 0 and 1.
-    """
-
+def apply_confidence_calibration(raw_ml_risk, features, reasons, trusted):
     risk = float(raw_ml_risk)
-
-    features = list(features)
+    f = dict(zip(FEATURE_NAMES, features))
 
     strong_reason_count = 0
 
@@ -312,51 +359,32 @@ def apply_confidence_calibration(
         if reason in reasons:
             strong_reason_count += 1
 
-    # Trusted official domain with no major dangerous patterns
-    # should normally remain low risk.
     if trusted:
         clean_trusted_url = (
-            features[12] == 1
-            and features[13] == 0
-            and features[15] == 0
-            and features[16] == 0
+            f["HTTPS"] == 1
+            and f["Has @ Symbol"] == 0
+            and f["IP Address"] == 0
+            and f["Short URL"] == 0
         )
 
         if clean_trusted_url:
-            risk = min(
-                risk,
-                TRUSTED_DOMAIN_MAX_RISK,
-            )
+            risk = min(risk, TRUSTED_DOMAIN_MAX_RISK)
 
-    # If we cannot find any suspicious pattern,
-    # reduce uncertain ML risk.
-    if reasons == ["No major suspicious pattern found"]:
+    # reduce only if model is also not sure
+    if reasons == [REASON_TEXT["no_pattern"]] and risk < NO_PATTERN_ML_LIMIT:
         risk *= NO_PATTERN_REDUCTION
 
-    # Multiple strong indicators increase risk.
     if not trusted:
-
         if strong_reason_count >= 2:
             risk += TWO_STRONG_REASON_BONUS
 
         if strong_reason_count >= 3:
             risk += THREE_STRONG_REASON_BONUS
 
-    # Keep risk inside 0 to 1.
-    risk = max(0.0, min(risk, 1.0))
+    return max(0.0, min(risk, 1.0))
 
-    return risk
-
-
-# --------------------------------------------------
-# Final result helpers
-# --------------------------------------------------
 
 def risk_score_to_result(risk_score):
-    """
-    Convert a 0-100 risk score into a readable result.
-    """
-
     if risk_score >= PHISHING_CUTOFF * 100:
         return "Phishing/Fraud URL"
 
@@ -367,15 +395,7 @@ def risk_score_to_result(risk_score):
 
 
 def binary_label_from_risk_score(risk):
-    """
-    Convert a 0-1 risk value into binary form.
-
-    0 = Safe
-    1 = Unsafe
-
-    Suspicious URLs are also treated as unsafe during evaluation.
-    """
-
+    # suspicious is also counted as unsafe
     if risk >= SAFE_CUTOFF:
         return 1
 
