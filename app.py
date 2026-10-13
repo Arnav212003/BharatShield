@@ -400,6 +400,11 @@ with st.expander("📊 Model Analytics"):
         "feature_importance.png",
     )
 
+    reliability_curve = os.path.join(
+        MODEL_DIR,
+        "reliability_curve.png",
+    )
+
     if os.path.exists(report_path):
         st.markdown("### Evaluation Report")
 
@@ -443,6 +448,14 @@ with st.expander("📊 Model Analytics"):
             use_container_width=True,
         )
 
+    if os.path.exists(reliability_curve):
+        st.markdown("### Reliability Curve")
+
+        st.image(
+            reliability_curve,
+            use_container_width=True,
+        )
+
     if not any(
         os.path.exists(path)
         for path in [
@@ -451,6 +464,7 @@ with st.expander("📊 Model Analytics"):
             hybrid_cm,
             final_cm,
             feature_importance,
+            reliability_curve,
         ]
     ):
         st.info(
