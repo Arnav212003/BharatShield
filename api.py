@@ -1,5 +1,6 @@
 import os
 import sys
+import logging
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -15,6 +16,13 @@ if SRC_DIR not in sys.path:
 from predict import MAX_URL_LENGTH, predict_url
 from scam_message import MAX_MESSAGE_LENGTH, analyze_scam_message
 from security_layers import get_domain, is_trusted_domain
+
+
+LOG_LEVEL = os.getenv("BHARATSHIELD_LOG_LEVEL", "WARNING").upper()
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.WARNING)
+)
+logger = logging.getLogger("bharatshield.api")
 
 
 app = FastAPI(
@@ -71,6 +79,12 @@ def scan_url(request: URLRequest):
 
         root_domain, full_domain = get_domain(url)
 
+        logger.info(
+            "URL scan completed: result=%s risk_score=%s",
+            result,
+            risk_score,
+        )
+
         return {
             "url": url,
             "result": result,
@@ -89,6 +103,8 @@ def scan_url(request: URLRequest):
         )
 
     except Exception:
+        logger.exception("URL scan failed")
+
         raise HTTPException(
             status_code=500,
             detail="URL scan failed",
@@ -115,10 +131,18 @@ def scan_message(request: MessageRequest):
         )
 
     try:
-        return analyze_scam_message(
+        result = analyze_scam_message(
             message,
             url_predictor=predict_url,
         )
+
+        logger.info(
+            "Message scan completed: status=%s risk_score=%s",
+            result["status"],
+            result["risk_score"],
+        )
+
+        return result
 
     except ValueError as error:
         raise HTTPException(
@@ -127,6 +151,8 @@ def scan_message(request: MessageRequest):
         )
 
     except Exception:
+        logger.exception("Message scan failed")
+
         raise HTTPException(
             status_code=500,
             detail="Message scan failed",
