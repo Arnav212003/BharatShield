@@ -1,14 +1,6 @@
-import os
-import sys
 import unittest
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC_DIR = os.path.join(BASE_DIR, "src")
-
-if SRC_DIR not in sys.path:
-    sys.path.append(SRC_DIR)
-
-from scam_message import analyze_scam_message, extract_urls
+from src.scam_message import analyze_scam_message, extract_urls
 
 
 class TestScamMessage(unittest.TestCase):

@@ -1,9 +1,6 @@
 import re
 
-import tldextract
-
-from features import SHORTENERS
-
+from .features import SHORTENERS, extract_domain_parts
 
 MAX_MESSAGE_LENGTH = 3000
 
@@ -202,13 +199,13 @@ def has_brand(text):
 
 
 def is_shortened(url):
-    extracted = tldextract.extract(url.lower())
+    extracted = extract_domain_parts(url)
     root_domain = f"{extracted.domain}.{extracted.suffix}"
 
     return root_domain in SHORTENERS
 
 
-def get_confidence(score):
+def get_score_certainty(score):
     # not a real probability, only how far the score is from the
     # status cutoffs (35 and 70). near a cutoff = less sure
     distance = min(abs(score - 35), abs(score - 70), 30)
@@ -344,7 +341,7 @@ def analyze_scam_message(message, url_predictor=None):
     if url_predictor:
         for url in urls[:5]:
             try:
-                result, risk, url_reasons, confidence = url_predictor(url)
+                result, risk, url_reasons, score_certainty = url_predictor(url)
 
                 highest_url_risk = max(highest_url_risk, risk)
 
@@ -352,14 +349,14 @@ def analyze_scam_message(message, url_predictor=None):
                     "url": url,
                     "result": result,
                     "risk_score": risk,
-                    "confidence": confidence,
+                    "score_certainty": score_certainty,
                     "reasons": url_reasons,
                 })
 
-            except Exception as error:
+            except Exception:
                 url_results.append({
                     "url": url,
-                    "error": str(error),
+                    "error": "Link could not be scanned",
                 })
 
     score = max(score, highest_url_risk)
@@ -396,7 +393,7 @@ def analyze_scam_message(message, url_predictor=None):
     return {
         "status": status,
         "risk_score": score,
-        "confidence": get_confidence(score),
+        "score_certainty": get_score_certainty(score),
         "reasons": reasons,
         "signals": sorted(set(signals)),
         "sensitive_items_requested": requested_items,
