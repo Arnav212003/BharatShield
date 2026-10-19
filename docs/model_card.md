@@ -35,7 +35,7 @@ The URL model uses lexical features such as:
 - URL length
 - Domain length
 - Number of dots, hyphens, slashes, query markers, digits, and special characters
-- HTTPS flag
+- Explicit HTTPS scheme flag
 - IP-address usage
 - Suspicious keywords
 - Shortened-link domains
@@ -56,7 +56,7 @@ Training is handled by `src/train_model.py`.
 5. Train a Logistic Regression model on lexical + TF-IDF features.
 6. Select blend weights on validation data.
 7. Evaluate the final model on the test split.
-8. Save model artifacts, metrics, confusion matrices, feature importance, and blend config.
+8. Save model artifacts, metrics, confusion matrices, feature importance, blend config, and training metadata.
 
 ## Explainability
 
@@ -80,19 +80,22 @@ Saved metrics are stored in:
 model/model_evaluation_report.csv
 ```
 
-The project reports accuracy, precision, recall, F1 score, ROC-AUC, threshold, false-positive rate, PR-AUC, and Brier score for the saved models.
+The project reports accuracy, domain-macro accuracy, precision, recall, F1 score, ROC-AUC, threshold, false-positive rate, PR-AUC, Brier score, and confusion counts for the saved models. Dataset and split details are stored in `model/training_metadata.json`.
 
 Latest retrained final-system metrics:
 
 | Metric | Value |
 | --- | ---: |
-| Accuracy | 93.92% |
-| Precision | 81.07% |
-| Recall | 91.73% |
-| F1 Score | 86.07% |
-| ROC-AUC | 97.89% |
-| PR-AUC | 94.61% |
-| False Positive Rate | 5.52% |
+| Accuracy | 93.94% |
+| Domain-Macro Accuracy | 91.17% |
+| Precision | 81.14% |
+| Recall | 91.75% |
+| F1 Score | 86.12% |
+| ROC-AUC | 97.86% |
+| PR-AUC | 94.58% |
+| False Positive Rate | 5.49% |
+| False Positives | 897 |
+| False Negatives | 347 |
 
 For a fraud-warning system, recall is especially important because a missed phishing URL can cause real harm. Precision still matters because too many false alarms reduce user trust.
 
@@ -101,6 +104,9 @@ The layer-by-layer comparison is available in `docs/ablation_study.md`.
 ## Known Limitations
 
 - The system does not fetch live pages or inspect page content.
+- The exact dataset source and license are unverified.
+- Evaluation uses one dataset and one reproducible domain-group split, not an external temporal holdout.
+- The largest test domain contributes 13.41% of test rows; domain-macro accuracy is included to show this effect.
 - The trusted-domain list is static and must be maintained.
 - Attackers can create new TLD, redirect, and message patterns.
 - The scam-message detector is rule-based and should be expanded with real labeled SMS/email data before production use.
@@ -111,6 +117,7 @@ The layer-by-layer comparison is available in `docs/ablation_study.md`.
 - Add WHOIS/domain-age signals.
 - Add DNS and certificate metadata.
 - Add live URL reputation sources.
+- Validate on an independently sourced, time-separated URL dataset.
+- Add the confirmed dataset source, collection date, and license.
 - Add multilingual scam-message examples.
-- Add CI checks for tests and linting.
-- Track dataset version and training run metadata.
+- Add a dedicated linter and type checker to CI.

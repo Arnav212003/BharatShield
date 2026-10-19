@@ -13,6 +13,7 @@ The project is intended as an educational/final-year computer science project. I
 - Streamlit dashboard for interactive scanning
 - FastAPI service for API-based integration
 - Model evaluation report, confusion matrices, and feature importance output
+- Dataset hash, split checks, and training metadata for reproducibility
 - Unit tests for message analysis, URL features, security rules, API endpoints, and model artifacts
 - Docker support for running the FastAPI service in a clean environment
 
@@ -50,6 +51,7 @@ BharatShield/
 |   |-- hybrid_model.pkl
 |   |-- model_config.json
 |   |-- model_evaluation_report.csv
+|   |-- training_metadata.json
 |   `-- reliability_curve.png
 |-- src/
 |   |-- features.py
@@ -81,6 +83,12 @@ The saved evaluation report is available at:
 model/model_evaluation_report.csv
 ```
 
+Dataset hash, split sizes, overlap checks, package versions, and confusion counts are stored in:
+
+```text
+model/training_metadata.json
+```
+
 The current saved report shows the hybrid URL model performing strongest among the standalone ML models, with high recall for phishing detection. The final calibrated system intentionally favors recall because missing a fraud attempt is usually worse than showing an extra warning.
 
 More details are documented in:
@@ -94,13 +102,16 @@ Latest retrained final-system metrics:
 
 | Metric | Value |
 | --- | ---: |
-| Accuracy | 93.92% |
-| Precision | 81.07% |
-| Recall | 91.73% |
-| F1 Score | 86.07% |
-| ROC-AUC | 97.89% |
-| PR-AUC | 94.61% |
-| False Positive Rate | 5.52% |
+| Accuracy | 93.94% |
+| Domain-Macro Accuracy | 91.17% |
+| Precision | 81.14% |
+| Recall | 91.75% |
+| F1 Score | 86.12% |
+| ROC-AUC | 97.86% |
+| PR-AUC | 94.58% |
+| False Positive Rate | 5.49% |
+| False Positives | 897 |
+| False Negatives | 347 |
 
 ## Setup
 
@@ -186,6 +197,8 @@ Retraining writes updated model artifacts and evaluation files to the `model/` d
 ## Limitations
 
 - The confidence score is a calibrated project score, not a guaranteed real-world probability.
+- The exact dataset source and license are still unverified and must be added before formal submission.
+- Results come from one dataset and should also be checked on an independent, time-separated dataset.
 - Trusted-domain logic must be reviewed regularly because real services and hosting platforms change.
 - Scam-message rules cover common Indian banking/payment patterns but cannot cover every social-engineering style.
 - The project does not perform live web reputation lookup, WHOIS checks, DNS checks, or page-content analysis.
