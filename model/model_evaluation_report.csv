@@ -1,5 +1,5 @@
-Model,Threshold,Accuracy,Precision,Recall,FPR,F1 Score,ROC-AUC,PR-AUC,Brier
-Lexical Random Forest Model,0.35,84.02,57.05,88.95,17.26,69.52,93.56,85.51,0.0877
-Hybrid NLP + Lexical Logistic Regression Model,0.35,88.25,64.75,93.58,13.13,76.54,97.09,92.37,0.0617
-ML only (lexical + hybrid blend),0.35,89.72,67.48,96.17,11.94,79.31,98.16,95.09,0.0588
-Final System (ML + rules),0.35,93.92,81.07,91.73,5.52,86.07,97.89,94.61,0.0443
+Model,Threshold,Accuracy,Domain-Macro Accuracy,Precision,Recall,FPR,F1 Score,ROC-AUC,PR-AUC,Brier,TN,FP,FN,TP
+Lexical Random Forest Model,0.35,84.03,79.06,57.06,89.18,17.29,69.6,93.4,85.48,0.0888,13502,2823,455,3752
+Hybrid NLP + Lexical Logistic Regression Model,0.35,88.1,83.24,64.42,93.63,13.33,76.32,97.04,92.24,0.0623,14149,2176,268,3939
+ML only (lexical + hybrid blend),0.35,89.64,85.43,67.31,96.13,12.03,79.18,98.13,95.06,0.0593,14361,1964,163,4044
+Final System (ML + rules),0.35,93.94,91.17,81.14,91.75,5.49,86.12,97.86,94.58,0.0445,15428,897,347,3860

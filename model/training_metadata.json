@@ -1,0 +1,180 @@
+{
+  "generated_at_utc": "2026-10-19T11:57:09.116335+00:00",
+  "dataset": {
+    "path": "data/phishing.csv",
+    "sha256": "b1a7c26b354632c80817e10af154c4e5007f9480fb43a8ac2730491500fa2780",
+    "provenance_status": "unverified",
+    "source": null,
+    "license": null,
+    "raw_rows": 549346,
+    "raw_label_counts": {
+      "good": 392924,
+      "bad": 156422
+    },
+    "missing_rows_removed": 0,
+    "invalid_label_rows_removed": 0,
+    "conflicting_keys_removed": 2,
+    "conflicting_rows_removed": 6,
+    "duplicate_rows_removed": 47896,
+    "cleaned_rows_before_sampling": 501444,
+    "cleaned_label_counts": {
+      "safe": 392867,
+      "phishing": 108577
+    },
+    "sampled": true,
+    "sample_rows": 100000,
+    "sample_label_counts": {
+      "safe": 78492,
+      "phishing": 21508
+    },
+    "explicit_http_percent": 0.018,
+    "explicit_https_percent": 0.002,
+    "missing_scheme_percent": 99.978
+  },
+  "training": {
+    "seed": 42,
+    "split_method": "group shuffle split by root domain",
+    "test_size": 0.2,
+    "validation_size_within_train": 0.2,
+    "evaluation_threshold": 0.35,
+    "feature_count": 22,
+    "model_compression": 3,
+    "lexical_model": {
+      "type": "RandomForestClassifier",
+      "n_estimators": 200,
+      "max_depth": 18,
+      "class_weight": "balanced"
+    },
+    "hybrid_model": {
+      "type": "LogisticRegression",
+      "max_iter": 2000,
+      "class_weight": "balanced"
+    }
+  },
+  "splits": {
+    "train": {
+      "rows": 62189,
+      "labels": {
+        "safe": 48647,
+        "phishing": 13542
+      },
+      "phishing_percent": 21.7756,
+      "unique_domains": 27868,
+      "largest_domain_rows": 1700,
+      "largest_domain_percent": 2.7336,
+      "top_10_domains_percent": 12.105
+    },
+    "validation": {
+      "rows": 17279,
+      "labels": {
+        "safe": 13520,
+        "phishing": 3759
+      },
+      "phishing_percent": 21.7547,
+      "unique_domains": 6968,
+      "largest_domain_rows": 1762,
+      "largest_domain_percent": 10.1973,
+      "top_10_domains_percent": 30.3548
+    },
+    "test": {
+      "rows": 20532,
+      "labels": {
+        "safe": 16325,
+        "phishing": 4207
+      },
+      "phishing_percent": 20.49,
+      "unique_domains": 8710,
+      "largest_domain_rows": 2753,
+      "largest_domain_percent": 13.4083,
+      "top_10_domains_percent": 25.8426
+    }
+  },
+  "overlap_checks": {
+    "train_validation_domains": 0,
+    "train_test_domains": 0,
+    "validation_test_domains": 0,
+    "train_validation_urls": 0,
+    "train_test_urls": 0,
+    "validation_test_urls": 0
+  },
+  "blend_weights": {
+    "lexical": 0.5,
+    "hybrid": 0.5
+  },
+  "evaluation": [
+    {
+      "Model": "Lexical Random Forest Model",
+      "Threshold": 0.35,
+      "Accuracy": 84.03,
+      "Domain-Macro Accuracy": 79.06,
+      "Precision": 57.06,
+      "Recall": 89.18,
+      "FPR": 17.29,
+      "F1 Score": 69.6,
+      "ROC-AUC": 93.4,
+      "PR-AUC": 85.48,
+      "Brier": 0.0888,
+      "TN": 13502,
+      "FP": 2823,
+      "FN": 455,
+      "TP": 3752
+    },
+    {
+      "Model": "Hybrid NLP + Lexical Logistic Regression Model",
+      "Threshold": 0.35,
+      "Accuracy": 88.1,
+      "Domain-Macro Accuracy": 83.24,
+      "Precision": 64.42,
+      "Recall": 93.63,
+      "FPR": 13.33,
+      "F1 Score": 76.32,
+      "ROC-AUC": 97.04,
+      "PR-AUC": 92.24,
+      "Brier": 0.0623,
+      "TN": 14149,
+      "FP": 2176,
+      "FN": 268,
+      "TP": 3939
+    },
+    {
+      "Model": "ML only (lexical + hybrid blend)",
+      "Threshold": 0.35,
+      "Accuracy": 89.64,
+      "Domain-Macro Accuracy": 85.43,
+      "Precision": 67.31,
+      "Recall": 96.13,
+      "FPR": 12.03,
+      "F1 Score": 79.18,
+      "ROC-AUC": 98.13,
+      "PR-AUC": 95.06,
+      "Brier": 0.0593,
+      "TN": 14361,
+      "FP": 1964,
+      "FN": 163,
+      "TP": 4044
+    },
+    {
+      "Model": "Final System (ML + rules)",
+      "Threshold": 0.35,
+      "Accuracy": 93.94,
+      "Domain-Macro Accuracy": 91.17,
+      "Precision": 81.14,
+      "Recall": 91.75,
+      "FPR": 5.49,
+      "F1 Score": 86.12,
+      "ROC-AUC": 97.86,
+      "PR-AUC": 94.58,
+      "Brier": 0.0445,
+      "TN": 15428,
+      "FP": 897,
+      "FN": 347,
+      "TP": 3860
+    }
+  ],
+  "versions": {
+    "python": "3.13.14",
+    "pandas": "2.3.3",
+    "numpy": "2.4.4",
+    "scikit_learn": "1.8.0"
+  }
+}
