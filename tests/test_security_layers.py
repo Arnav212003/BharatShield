@@ -1,18 +1,9 @@
-import os
-import sys
 import unittest
 
-
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC_DIR = os.path.join(BASE_DIR, "src")
-
-if SRC_DIR not in sys.path:
-    sys.path.append(SRC_DIR)
-
-from features import extract_features
-from security_layers import (
+from src.features import extract_features
+from src.security_layers import (
     FEATURE_NAMES,
-    apply_confidence_calibration,
+    apply_risk_rules,
     get_reasons_from_features,
     is_redirect_link,
     is_trusted_domain,
@@ -21,7 +12,7 @@ from security_layers import (
 
 
 def feature_map(url):
-    return dict(zip(FEATURE_NAMES, extract_features(url)))
+    return dict(zip(FEATURE_NAMES, extract_features(url), strict=True))
 
 
 class TestSecurityLayers(unittest.TestCase):
@@ -69,19 +60,51 @@ class TestSecurityLayers(unittest.TestCase):
     def test_clean_official_domain_is_trusted(self):
         self.assertTrue(is_trusted_domain("https://accounts.google.com"))
 
-    def test_trusted_clean_domain_caps_risk(self):
+    def test_clean_trusted_domain_is_capped_below_alert_threshold(self):
         url = "https://accounts.google.com"
         features = extract_features(url)
         reasons = get_reasons_from_features(url, features)
 
-        calibrated = apply_confidence_calibration(
+        adjusted = apply_risk_rules(
             raw_ml_risk=0.82,
             features=features,
             reasons=reasons,
             trusted=True,
         )
 
-        self.assertLessEqual(calibrated, 0.18)
+        self.assertEqual(adjusted, 0.20)
+
+    def test_trusted_domain_cap_does_not_raise_a_low_score(self):
+        url = "https://accounts.google.com"
+        features = extract_features(url)
+        reasons = get_reasons_from_features(url, features)
+
+        adjusted = apply_risk_rules(
+            raw_ml_risk=0.10,
+            features=features,
+            reasons=reasons,
+            trusted=True,
+        )
+
+        self.assertEqual(adjusted, 0.10)
+
+    def test_http_trusted_domain_is_not_capped(self):
+        url = "http://accounts.google.com"
+        features = extract_features(url)
+        reasons = get_reasons_from_features(url, features)
+
+        adjusted = apply_risk_rules(
+            raw_ml_risk=0.82,
+            features=features,
+            reasons=reasons,
+            trusted=True,
+        )
+
+        self.assertEqual(adjusted, 0.82)
+
+    def test_github_homepage_is_trusted_but_user_pages_are_not(self):
+        self.assertTrue(is_trusted_domain("https://github.com"))
+        self.assertFalse(is_trusted_domain("https://name.github.io/login"))
 
     def test_risk_score_boundaries(self):
         self.assertEqual(risk_score_to_result(20), "Safe URL")

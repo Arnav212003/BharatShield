@@ -4,6 +4,36 @@ from urllib.parse import urlparse
 
 import tldextract
 
+FEATURE_NAMES = [
+    "URL Length",
+    "Domain Length",
+    "Full Domain Length",
+    "Dots",
+    "Hyphens",
+    "Slashes",
+    "Question Marks",
+    "Equal Symbols",
+    "@ Count",
+    "Percent Symbols",
+    "Digits",
+    "Special Characters",
+    "HTTPS",
+    "Has @ Symbol",
+    "Suspicious Keyword",
+    "IP Address",
+    "Short URL",
+    "Suspicious TLD",
+    "Has Query",
+    "Subdomain Count",
+    "Hyphen In Domain",
+    "Digit In Domain",
+]
+
+
+# Use tldextract's bundled suffix list so training and prediction do not
+# depend on a network request or a changing local cache.
+DOMAIN_EXTRACTOR = tldextract.TLDExtract(suffix_list_urls=())
+
 
 SHORTENERS = [
     "bit.ly",
@@ -65,7 +95,7 @@ SUSPICIOUS_TLDS = [
 
 def add_scheme(url):
     # add a temporary scheme only so urlparse can find the hostname
-    if "://" in url:
+    if get_explicit_scheme(url):
         return url
 
     if url.startswith("//"):
@@ -84,10 +114,14 @@ def get_explicit_scheme(url):
 def parse_url(url):
     try:
         parsed = urlparse(url)
-        parsed.hostname
+        _ = parsed.hostname
         return parsed
     except ValueError:
         return urlparse("")
+
+
+def extract_domain_parts(url):
+    return DOMAIN_EXTRACTOR(str(url).lower().strip())
 
 
 def has_ip_address(host):
@@ -108,6 +142,54 @@ def has_ip_address(host):
         return 1
 
     return 0
+
+
+def validate_url_text(url, max_length=2048):
+    url = str(url).strip()
+
+    if not url:
+        raise ValueError("URL cannot be empty.")
+
+    if len(url) > max_length:
+        raise ValueError(f"URL cannot be longer than {max_length} characters.")
+
+    if any(char.isspace() for char in url):
+        raise ValueError("URL cannot contain spaces.")
+
+    explicit_scheme = get_explicit_scheme(url)
+
+    if explicit_scheme and explicit_scheme not in {"http", "https"}:
+        raise ValueError("Only HTTP and HTTPS URLs are supported.")
+
+    scheme_prefix = re.match(r"^([a-z][a-z0-9+.-]*):", url, re.IGNORECASE)
+
+    if (
+        scheme_prefix
+        and not explicit_scheme
+        and "." not in scheme_prefix.group(1)
+    ):
+        raise ValueError("Only HTTP and HTTPS URLs are supported.")
+
+    parsed = parse_url(add_scheme(url))
+    host = parsed.hostname or ""
+
+    try:
+        _ = parsed.port
+    except ValueError as error:
+        raise ValueError("URL contains an invalid port.") from error
+
+    if not host:
+        raise ValueError("URL must contain a valid hostname.")
+
+    if has_ip_address(host):
+        return url
+
+    extracted = extract_domain_parts(host)
+
+    if not extracted.domain or not extracted.suffix:
+        raise ValueError("URL must contain a valid public domain.")
+
+    return url
 
 
 def is_short_url(domain, suffix):
@@ -138,7 +220,7 @@ def has_suspicious_tld(suffix):
 
 
 def extract_features(url):
-    # feature order must stay same as FEATURE_NAMES in security_layers.py
+    # Keep this order in sync with FEATURE_NAMES above.
     url = str(url).strip()
     url_lower = url.lower()
     explicit_scheme = get_explicit_scheme(url_lower)
@@ -146,7 +228,7 @@ def extract_features(url):
     full_url = add_scheme(url_lower)
 
     parsed_url = parse_url(full_url)
-    extracted = tldextract.extract(full_url)
+    extracted = extract_domain_parts(full_url)
 
     host = parsed_url.hostname or ""
 
@@ -186,3 +268,10 @@ def extract_features(url):
     ]
 
     return features
+
+
+def feature_values_to_dict(features):
+    if len(features) != len(FEATURE_NAMES):
+        raise ValueError("Feature values do not match the feature names.")
+
+    return dict(zip(FEATURE_NAMES, features, strict=True))

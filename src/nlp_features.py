@@ -1,6 +1,5 @@
 from sklearn.feature_extraction.text import TfidfVectorizer
 
-
 REPLACEMENTS = {
     "https://": "",
     "http://": "",

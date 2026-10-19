@@ -4,51 +4,28 @@ import warnings
 from functools import lru_cache
 from urllib.parse import parse_qs, urlparse
 
-import tldextract
-
-from features import extract_features, get_explicit_scheme
-
+from .features import (
+    FEATURE_NAMES,
+    add_scheme,
+    extract_domain_parts,
+    extract_features,
+    get_explicit_scheme,
+)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TRUSTED_DOMAINS_FILE = os.path.join(BASE_DIR, "config", "trusted_domains.json")
 
 
-# order must match extract_features()
-FEATURE_NAMES = [
-    "URL Length",
-    "Domain Length",
-    "Full Domain Length",
-    "Dots",
-    "Hyphens",
-    "Slashes",
-    "Question Marks",
-    "Equal Symbols",
-    "@ Count",
-    "Percent Symbols",
-    "Digits",
-    "Special Characters",
-    "HTTPS",
-    "Has @ Symbol",
-    "Suspicious Keyword",
-    "IP Address",
-    "Short URL",
-    "Suspicious TLD",
-    "Has Query",
-    "Subdomain Count",
-    "Hyphen In Domain",
-    "Digit In Domain",
-]
-
-
 SAFE_CUTOFF = 0.35
 PHISHING_CUTOFF = 0.70
+TRUSTED_DOMAIN_MAX_RISK = 0.20
 
-# hand tuned, still need ablation to check these
-TRUSTED_DOMAIN_MAX_RISK = 0.18
-NO_PATTERN_REDUCTION = 0.45
-NO_PATTERN_ML_LIMIT = 0.50
-TWO_STRONG_REASON_BONUS = 0.15
-THREE_STRONG_REASON_BONUS = 0.10
+DEFAULT_RISK_POLICY = {
+    "no_pattern_reduction": 0.45,
+    "no_pattern_ml_limit": 0.50,
+    "two_reason_bonus": 0.15,
+    "three_reason_bonus": 0.10,
+}
 
 
 # companies that own every subdomain, so the whole root domain is trusted
@@ -78,6 +55,8 @@ TRUSTED_HOSTS = [
     "mail.google.com",
     "myaccount.google.com",
     "support.google.com",
+    "github.com",
+    "www.github.com",
     "docs.github.com",
 ]
 
@@ -143,7 +122,10 @@ def load_trusted_domains():
             return cleaned
 
     except (OSError, json.JSONDecodeError, TypeError) as error:
-        warnings.warn(f"trusted_domains.json not loaded: {error}")
+        warnings.warn(
+            f"trusted_domains.json not loaded: {error}",
+            stacklevel=2,
+        )
 
     return DEFAULT_TRUSTED_DOMAINS.copy()
 
@@ -153,7 +135,7 @@ TRUSTED_DOMAINS = load_trusted_domains()
 
 @lru_cache(maxsize=2048)
 def split_domain(url_text):
-    extracted = tldextract.extract(url_text)
+    extracted = extract_domain_parts(url_text)
     return extracted.subdomain, extracted.domain, extracted.suffix
 
 
@@ -173,9 +155,7 @@ def get_domain(url):
 
 def parse_with_scheme(url):
     url = str(url).lower().strip()
-
-    if "://" not in url:
-        url = "http://" + url
+    url = add_scheme(url)
 
     try:
         return urlparse(url)
@@ -286,7 +266,7 @@ STRONG_REASONS = [REASON_TEXT[code] for code in STRONG_REASON_CODES]
 
 
 def get_reason_codes(url, features):
-    f = dict(zip(FEATURE_NAMES, features))
+    f = dict(zip(FEATURE_NAMES, features, strict=True))
     trusted = is_trusted_domain(url)
     explicit_scheme = get_explicit_scheme(url)
 
@@ -350,9 +330,19 @@ def get_reasons(url):
     return get_reasons_from_features(url, features)
 
 
-def apply_confidence_calibration(raw_ml_risk, features, reasons, trusted):
+def apply_risk_rules(
+    raw_ml_risk,
+    features,
+    reasons,
+    trusted,
+    policy=None,
+    trusted_domain_max_risk=TRUSTED_DOMAIN_MAX_RISK,
+):
+    if policy is None:
+        policy = DEFAULT_RISK_POLICY
+
     risk = float(raw_ml_risk)
-    f = dict(zip(FEATURE_NAMES, features))
+    f = dict(zip(FEATURE_NAMES, features, strict=True))
 
     strong_reason_count = 0
 
@@ -369,35 +359,42 @@ def apply_confidence_calibration(raw_ml_risk, features, reasons, trusted):
         )
 
         if clean_trusted_url:
-            risk = min(risk, TRUSTED_DOMAIN_MAX_RISK)
+            risk = min(risk, trusted_domain_max_risk)
 
     # reduce only if model is also not sure
-    if reasons == [REASON_TEXT["no_pattern"]] and risk < NO_PATTERN_ML_LIMIT:
-        risk *= NO_PATTERN_REDUCTION
+    if (
+        reasons == [REASON_TEXT["no_pattern"]]
+        and risk < policy["no_pattern_ml_limit"]
+    ):
+        risk *= policy["no_pattern_reduction"]
 
     if not trusted:
         if strong_reason_count >= 2:
-            risk += TWO_STRONG_REASON_BONUS
+            risk += policy["two_reason_bonus"]
 
         if strong_reason_count >= 3:
-            risk += THREE_STRONG_REASON_BONUS
+            risk += policy["three_reason_bonus"]
 
     return max(0.0, min(risk, 1.0))
 
 
-def risk_score_to_result(risk_score):
-    if risk_score >= PHISHING_CUTOFF * 100:
+def risk_score_to_result(
+    risk_score,
+    safe_cutoff=SAFE_CUTOFF,
+    phishing_cutoff=PHISHING_CUTOFF,
+):
+    if risk_score >= phishing_cutoff * 100:
         return "Phishing/Fraud URL"
 
-    if risk_score >= SAFE_CUTOFF * 100:
+    if risk_score >= safe_cutoff * 100:
         return "Suspicious URL"
 
     return "Safe URL"
 
 
-def binary_label_from_risk_score(risk):
+def binary_label_from_risk_score(risk, safe_cutoff=SAFE_CUTOFF):
     # suspicious is also counted as unsafe
-    if risk >= SAFE_CUTOFF:
+    if risk >= safe_cutoff:
         return 1
 
     return 0
