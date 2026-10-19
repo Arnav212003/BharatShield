@@ -26,11 +26,28 @@ def feature_map(url):
 
 class TestSecurityLayers(unittest.TestCase):
 
-    def test_url_without_scheme_is_treated_as_https(self):
-        features = feature_map("example.com/login")
+    def test_explicit_https_sets_https_feature(self):
+        features = feature_map("https://example.com/login")
 
         self.assertEqual(features["HTTPS"], 1)
         self.assertEqual(features["Suspicious Keyword"], 1)
+
+    def test_explicit_http_clears_https_feature(self):
+        url = "http://example.com/login"
+        features = feature_map(url)
+        reasons = get_reasons_from_features(url, list(features.values()))
+
+        self.assertEqual(features["HTTPS"], 0)
+        self.assertIn("No HTTPS found", reasons)
+
+    def test_url_without_scheme_is_not_assumed_https(self):
+        url = "example.com/login"
+        features = feature_map("example.com/login")
+        reasons = get_reasons_from_features(url, list(features.values()))
+
+        self.assertEqual(features["HTTPS"], 0)
+        self.assertEqual(features["Suspicious Keyword"], 1)
+        self.assertNotIn("No HTTPS found", reasons)
 
     def test_ip_address_url_is_flagged(self):
         features = feature_map("http://192.168.1.10/login")

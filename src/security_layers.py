@@ -6,7 +6,7 @@ from urllib.parse import parse_qs, urlparse
 
 import tldextract
 
-from features import extract_features
+from features import extract_features, get_explicit_scheme
 
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -288,10 +288,11 @@ STRONG_REASONS = [REASON_TEXT[code] for code in STRONG_REASON_CODES]
 def get_reason_codes(url, features):
     f = dict(zip(FEATURE_NAMES, features))
     trusted = is_trusted_domain(url)
+    explicit_scheme = get_explicit_scheme(url)
 
     codes = []
 
-    if f["HTTPS"] == 0:
+    if explicit_scheme and explicit_scheme != "https":
         codes.append("no_https")
 
     if f["Suspicious Keyword"] == 1 and not trusted:
@@ -361,7 +362,7 @@ def apply_confidence_calibration(raw_ml_risk, features, reasons, trusted):
 
     if trusted:
         clean_trusted_url = (
-            f["HTTPS"] == 1
+            REASON_TEXT["no_https"] not in reasons
             and f["Has @ Symbol"] == 0
             and f["IP Address"] == 0
             and f["Short URL"] == 0

@@ -64,7 +64,7 @@ SUSPICIOUS_TLDS = [
 
 
 def add_scheme(url):
-    # if user did not type http/https, assume https
+    # add a temporary scheme only so urlparse can find the hostname
     if "://" in url:
         return url
 
@@ -72,6 +72,13 @@ def add_scheme(url):
         return "https:" + url
 
     return "https://" + url
+
+
+def get_explicit_scheme(url):
+    url = str(url).lower().strip()
+    match = re.match(r"^([a-z][a-z0-9+.-]*):\/\/", url)
+
+    return match.group(1) if match else ""
 
 
 def parse_url(url):
@@ -134,6 +141,7 @@ def extract_features(url):
     # feature order must stay same as FEATURE_NAMES in security_layers.py
     url = str(url).strip()
     url_lower = url.lower()
+    explicit_scheme = get_explicit_scheme(url_lower)
 
     full_url = add_scheme(url_lower)
 
@@ -164,7 +172,7 @@ def extract_features(url):
         sum(char.isdigit() for char in url_lower),
         sum(not char.isalnum() for char in url_lower),
 
-        1 if parsed_url.scheme == "https" else 0,
+        1 if explicit_scheme == "https" else 0,
         1 if "@" in url_lower else 0,
         has_suspicious_keyword(url_lower),
         has_ip_address(host),
