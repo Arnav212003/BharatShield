@@ -1,0 +1,7 @@
+-r requirements.txt
+-r requirements-api.txt
+-r requirements-train.txt
+
+httpx2==2.14.0
+mypy==2.4.0
+ruff==0.17.1
