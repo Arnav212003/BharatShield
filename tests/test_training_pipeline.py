@@ -1,17 +1,14 @@
-import os
-import sys
 import unittest
 
 import pandas as pd
 
-
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC_DIR = os.path.join(BASE_DIR, "src")
-
-if SRC_DIR not in sys.path:
-    sys.path.append(SRC_DIR)
-
-from train_model import make_key, split_by_domain
+from src.features import FEATURE_NAMES, extract_features
+from src.train_model import (
+    make_key,
+    pick_decision_settings,
+    precision_at_prevalence,
+    split_by_domain,
+)
 
 
 class TestTrainingPipeline(unittest.TestCase):
@@ -46,6 +43,40 @@ class TestTrainingPipeline(unittest.TestCase):
 
         self.assertEqual(len(first) + len(second), len(data))
         self.assertFalse(set(first["domain"]) & set(second["domain"]))
+
+    def test_precision_at_prevalence_uses_recall_and_false_positive_rate(self):
+        precision = precision_at_prevalence(
+            recall=0.90,
+            fpr=0.05,
+            prevalence=0.01,
+        )
+
+        self.assertAlmostEqual(precision, 0.153846, places=5)
+
+    def test_decision_settings_are_selected_from_given_validation_rows(self):
+        urls = pd.Series([
+            "https://safe-one.com",
+            "https://safe-two.com",
+            "http://bad-login.xyz/verify",
+            "http://192.168.1.10/login",
+        ])
+        lexical = pd.DataFrame(
+            [extract_features(url) for url in urls],
+            columns=FEATURE_NAMES,
+        )
+        labels = pd.Series([0, 0, 1, 1])
+        raw_scores = [0.10, 0.20, 0.65, 0.80]
+
+        selected, candidates = pick_decision_settings(
+            urls,
+            lexical,
+            raw_scores,
+            labels,
+        )
+
+        self.assertIn(selected, candidates)
+        self.assertGreater(len(candidates), 1)
+        self.assertGreaterEqual(selected["recall"], 0.90)
 
 
 if __name__ == "__main__":

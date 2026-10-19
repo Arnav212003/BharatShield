@@ -12,9 +12,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import scipy
 import seaborn as sns
 import sklearn
-
+import tldextract
 from scipy.sparse import csr_matrix, hstack
 from sklearn.calibration import calibration_curve
 from sklearn.compose import ColumnTransformer
@@ -35,27 +36,92 @@ from sklearn.model_selection import GroupShuffleSplit
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import MaxAbsScaler
 
-from features import extract_features, get_explicit_scheme
-from nlp_features import clean_url_text, create_nlp_vectorizer, fit_transform_urls_for_nlp
-from security_layers import (
-    FEATURE_NAMES,
+from .features import FEATURE_NAMES, extract_features, get_explicit_scheme
+from .nlp_features import (
+    clean_url_text,
+    create_nlp_vectorizer,
+    fit_transform_urls_for_nlp,
+)
+from .security_layers import (
+    DEFAULT_RISK_POLICY,
+    PHISHING_CUTOFF,
     SAFE_CUTOFF,
-    apply_confidence_calibration,
+    TRUSTED_DOMAIN_MAX_RISK,
+    apply_risk_rules,
     get_domain,
     get_reasons_from_features,
     is_trusted_domain,
 )
 
-
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_PATH = os.path.join(BASE_DIR, "data", "phishing.csv")
-MODEL_DIR = os.path.join(BASE_DIR, "model")
+DATA_PATH = os.path.abspath(
+    os.getenv(
+        "BHARATSHIELD_DATA_PATH",
+        os.path.join(BASE_DIR, "data", "phishing.csv"),
+    )
+)
+MODEL_DIR = os.path.abspath(
+    os.getenv(
+        "BHARATSHIELD_MODEL_DIR",
+        os.path.join(BASE_DIR, "model"),
+    )
+)
+DATA_PROVENANCE_PATH = os.path.join(BASE_DIR, "data", "provenance.json")
 
 SEED = 42
 MODEL_COMPRESSION = 3
+MIN_VALIDATION_RECALL = 0.90
+DECISION_THRESHOLDS = [0.30, SAFE_CUTOFF, 0.40, 0.45, 0.50]
 
-# every model is checked at this same threshold, so the comparison is fair
-EVAL_THRESHOLD = SAFE_CUTOFF
+RISK_POLICY_CANDIDATES = [
+    {
+        "name": "no_adjustment",
+        "no_pattern_reduction": 1.0,
+        "no_pattern_ml_limit": 0.0,
+        "two_reason_bonus": 0.0,
+        "three_reason_bonus": 0.0,
+    },
+    {
+        "name": "light_rules",
+        "no_pattern_reduction": 0.70,
+        "no_pattern_ml_limit": 0.45,
+        "two_reason_bonus": 0.10,
+        "three_reason_bonus": 0.05,
+    },
+    {
+        "name": "balanced_rules",
+        "no_pattern_reduction": 0.55,
+        "no_pattern_ml_limit": 0.50,
+        "two_reason_bonus": 0.15,
+        "three_reason_bonus": 0.05,
+    },
+    {
+        "name": "strong_rules",
+        **DEFAULT_RISK_POLICY,
+    },
+]
+
+
+def load_dataset_provenance():
+    default = {
+        "provenance_status": "unverified",
+        "source": None,
+        "license": None,
+        "redistribution_allowed": False,
+    }
+
+    try:
+        with open(DATA_PROVENANCE_PATH, "r", encoding="utf-8") as file:
+            saved = json.load(file)
+
+        for key in default:
+            if key in saved:
+                default[key] = saved[key]
+
+    except (OSError, json.JSONDecodeError, TypeError):
+        pass
+
+    return default
 
 
 def sha256_file(path):
@@ -254,32 +320,58 @@ def get_domain_macro_accuracy(domains, y_true, predictions):
     return float(rows.groupby("domain")["correct"].mean().mean())
 
 
-def evaluate_scores(name, y_true, scores, domains):
+def get_binary_metrics(y_true, scores, threshold):
     scores = np.asarray(scores, dtype=float)
-    predictions = (scores >= EVAL_THRESHOLD).astype(int)
+    predictions = (scores >= threshold).astype(int)
 
     matrix = confusion_matrix(y_true, predictions, labels=[0, 1])
     tn, fp, fn, tp = matrix.ravel()
-
     fpr = fp / (fp + tn) if (fp + tn) else 0.0
 
-    result = {
-        "model_name": name,
+    return {
+        "predictions": predictions,
         "accuracy": accuracy_score(y_true, predictions),
-        "domain_macro_accuracy": get_domain_macro_accuracy(domains, y_true, predictions),
         "precision": precision_score(y_true, predictions, zero_division=0),
         "recall": recall_score(y_true, predictions, zero_division=0),
         "fpr": fpr,
         "f1_score": f1_score(y_true, predictions, zero_division=0),
-        "roc_auc": roc_auc_score(y_true, scores),
-        "pr_auc": average_precision_score(y_true, scores),
-        "brier": brier_score_loss(y_true, scores),
         "confusion_matrix": matrix,
         "true_negatives": int(tn),
         "false_positives": int(fp),
         "false_negatives": int(fn),
         "true_positives": int(tp),
     }
+
+
+def precision_at_prevalence(recall, fpr, prevalence):
+    true_positive_share = recall * prevalence
+    false_positive_share = fpr * (1 - prevalence)
+    denominator = true_positive_share + false_positive_share
+
+    return true_positive_share / denominator if denominator else 0.0
+
+
+def evaluate_scores(name, y_true, scores, domains, threshold):
+    scores = np.asarray(scores, dtype=float)
+    result = get_binary_metrics(y_true, scores, threshold)
+    predictions = result.pop("predictions")
+
+    result.update({
+        "model_name": name,
+        "domain_macro_accuracy": get_domain_macro_accuracy(
+            domains,
+            y_true,
+            predictions,
+        ),
+        "roc_auc": roc_auc_score(y_true, scores),
+        "pr_auc": average_precision_score(y_true, scores),
+        "brier": brier_score_loss(y_true, scores),
+        "precision_at_1_percent": precision_at_prevalence(
+            result["recall"],
+            result["fpr"],
+            0.01,
+        ),
+    })
 
     print(f"\n{name}")
     print("Accuracy :", round(result["accuracy"] * 100, 2), "%")
@@ -289,7 +381,15 @@ def evaluate_scores(name, y_true, scores, domains):
     print("FPR      :", round(result["fpr"] * 100, 2), "%")
     print("F1 Score :", round(result["f1_score"] * 100, 2), "%")
     print("PR-AUC   :", round(result["pr_auc"] * 100, 2), "%")
-    print("Confusion matrix [[TN FP] [FN TP]]:", matrix.tolist())
+    print(
+        "Est. precision at 1% prevalence:",
+        round(result["precision_at_1_percent"] * 100, 2),
+        "%",
+    )
+    print(
+        "Confusion matrix [[TN FP] [FN TP]]:",
+        result["confusion_matrix"].tolist(),
+    )
 
     return result
 
@@ -312,7 +412,7 @@ def pick_lexical_weight(lexical_scores, hybrid_scores, y_val):
     return round(best_weight, 1)
 
 
-def final_system_scores(urls, lexical, raw_scores):
+def final_system_scores(urls, lexical, raw_scores, policy):
     final_scores = []
 
     for i, url in enumerate(urls):
@@ -321,16 +421,62 @@ def final_system_scores(urls, lexical, raw_scores):
         reasons = get_reasons_from_features(url, features)
         trusted = is_trusted_domain(url)
 
-        final_risk = apply_confidence_calibration(
+        final_risk = apply_risk_rules(
             raw_ml_risk=raw_scores[i],
             features=features,
             reasons=reasons,
             trusted=trusted,
+            policy=policy,
+            trusted_domain_max_risk=TRUSTED_DOMAIN_MAX_RISK,
         )
 
         final_scores.append(final_risk)
 
     return np.array(final_scores)
+
+
+def pick_decision_settings(urls, lexical, raw_scores, y_val):
+    candidates = []
+
+    for saved_policy in RISK_POLICY_CANDIDATES:
+        policy = {
+            key: value
+            for key, value in saved_policy.items()
+            if key != "name"
+        }
+        scores = final_system_scores(urls, lexical, raw_scores, policy)
+
+        for threshold in DECISION_THRESHOLDS:
+            metrics = get_binary_metrics(y_val, scores, threshold)
+            metrics.pop("predictions")
+            metrics.pop("confusion_matrix")
+
+            candidates.append({
+                "policy_name": saved_policy["name"],
+                "policy": policy,
+                "threshold": threshold,
+                **metrics,
+            })
+
+    eligible = [
+        item
+        for item in candidates
+        if item["recall"] >= MIN_VALIDATION_RECALL
+    ]
+
+    if not eligible:
+        eligible = candidates
+
+    best = max(
+        eligible,
+        key=lambda item: (
+            item["f1_score"],
+            item["precision"],
+            -item["fpr"],
+        ),
+    )
+
+    return best, candidates
 
 
 def save_confusion_matrix(matrix, title, file_name):
@@ -473,7 +619,14 @@ def main():
 
     hybrid_model = Pipeline([
         ("scale", scaler),
-        ("lr", LogisticRegression(max_iter=2000, class_weight="balanced")),
+        (
+            "lr",
+            LogisticRegression(
+                max_iter=2000,
+                class_weight="balanced",
+                random_state=SEED,
+            ),
+        ),
     ])
     hybrid_model.fit(x_train_hybrid, y_train)
 
@@ -484,6 +637,30 @@ def main():
     hybrid_weight = round(1 - lexical_weight, 1)
 
     print("\nBest weights on validation set -> lexical:", lexical_weight, "hybrid:", hybrid_weight)
+
+    val_ml_scores = (
+        lexical_weight * val_lexical_scores
+        + hybrid_weight * val_hybrid_scores
+    )
+    decision_settings, policy_candidates = pick_decision_settings(
+        val_df["url"],
+        x_val_lexical,
+        val_ml_scores,
+        y_val,
+    )
+    selected_policy = decision_settings["policy"]
+    eval_threshold = decision_settings["threshold"]
+
+    print(
+        "Selected validation policy:",
+        decision_settings["policy_name"],
+        "| threshold:",
+        eval_threshold,
+        "| F1:",
+        round(decision_settings["f1_score"], 4),
+        "| recall:",
+        round(decision_settings["recall"], 4),
+    )
 
     test_lexical_scores = lexical_model.predict_proba(x_test_lexical)[:, 1]
     test_hybrid_scores = hybrid_model.predict_proba(x_test_hybrid)[:, 1]
@@ -497,38 +674,43 @@ def main():
         test_df["url"],
         x_test_lexical,
         test_ml_scores,
+        selected_policy,
     )
 
-    print("\nAll results below are on the test set, threshold =", EVAL_THRESHOLD)
+    print("\nAll results below are on the test set, threshold =", eval_threshold)
 
     lexical_result = evaluate_scores(
         "Lexical Random Forest Model",
         y_test,
         test_lexical_scores,
         test_df["domain"],
+        eval_threshold,
     )
     hybrid_result = evaluate_scores(
         "Hybrid NLP + Lexical Logistic Regression Model",
         y_test,
         test_hybrid_scores,
         test_df["domain"],
+        eval_threshold,
     )
     ml_only_result = evaluate_scores(
         "ML only (lexical + hybrid blend)",
         y_test,
         test_ml_scores,
         test_df["domain"],
+        eval_threshold,
     )
     final_result = evaluate_scores(
-        "Final System (ML + rules)",
+        "Final System (validated policy)",
         y_test,
         test_final_scores,
         test_df["domain"],
+        eval_threshold,
     )
 
     results = [lexical_result, hybrid_result, ml_only_result, final_result]
 
-    print("\nEffect of rules (ML only -> ML + rules)")
+    print("\nEffect of selected policy (ML blend -> final score)")
     print("F1 :", round(ml_only_result["f1_score"] * 100, 2), "->", round(final_result["f1_score"] * 100, 2))
     print("FPR:", round(ml_only_result["fpr"] * 100, 2), "->", round(final_result["fpr"] * 100, 2))
 
@@ -537,7 +719,7 @@ def main():
     for result in results:
         report_rows.append({
             "Model": result["model_name"],
-            "Threshold": EVAL_THRESHOLD,
+            "Threshold": eval_threshold,
             "Accuracy": round(result["accuracy"] * 100, 2),
             "Domain-Macro Accuracy": round(result["domain_macro_accuracy"] * 100, 2),
             "Precision": round(result["precision"] * 100, 2),
@@ -547,6 +729,10 @@ def main():
             "ROC-AUC": round(result["roc_auc"] * 100, 2),
             "PR-AUC": round(result["pr_auc"] * 100, 2),
             "Brier": round(result["brier"], 4),
+            "Est. Precision at 1% Prevalence": round(
+                result["precision_at_1_percent"] * 100,
+                2,
+            ),
             "TN": result["true_negatives"],
             "FP": result["false_positives"],
             "FN": result["false_negatives"],
@@ -577,19 +763,24 @@ def main():
             {
                 "lexical_weight": lexical_weight,
                 "hybrid_weight": hybrid_weight,
+                "safe_cutoff": eval_threshold,
+                "phishing_cutoff": PHISHING_CUTOFF,
+                "trusted_domain_max_risk": TRUSTED_DOMAIN_MAX_RISK,
+                "risk_policy_name": decision_settings["policy_name"],
+                "risk_policy": selected_policy,
             },
             file,
             indent=2,
         )
+
+    dataset_provenance = load_dataset_provenance()
 
     metadata = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "dataset": {
             "path": "data/phishing.csv",
             "sha256": sha256_file(DATA_PATH),
-            "provenance_status": "unverified",
-            "source": None,
-            "license": None,
+            **dataset_provenance,
             **df.attrs["dataset_summary"],
         },
         "training": {
@@ -597,8 +788,9 @@ def main():
             "split_method": "group shuffle split by root domain",
             "test_size": 0.20,
             "validation_size_within_train": 0.20,
-            "evaluation_threshold": EVAL_THRESHOLD,
+            "evaluation_threshold": eval_threshold,
             "feature_count": len(FEATURE_NAMES),
+            "feature_names": FEATURE_NAMES,
             "model_compression": MODEL_COMPRESSION,
             "lexical_model": {
                 "type": "RandomForestClassifier",
@@ -629,12 +821,50 @@ def main():
             "lexical": lexical_weight,
             "hybrid": hybrid_weight,
         },
+        "decision_policy_selection": {
+            "split": "validation",
+            "objective": (
+                "highest F1 among candidates with at least 90% recall"
+            ),
+            "selected_policy": decision_settings["policy_name"],
+            "score_adjustment_enabled": (
+                decision_settings["policy_name"] != "no_adjustment"
+            ),
+            "selected_threshold": eval_threshold,
+            "selected_validation_precision": round(
+                decision_settings["precision"],
+                6,
+            ),
+            "selected_validation_recall": round(
+                decision_settings["recall"],
+                6,
+            ),
+            "selected_validation_f1": round(
+                decision_settings["f1_score"],
+                6,
+            ),
+            "threshold_candidates": DECISION_THRESHOLDS,
+            "policy_candidates": [
+                item["name"] for item in RISK_POLICY_CANDIDATES
+            ],
+            "evaluated_candidate_count": len(policy_candidates),
+        },
+        "fixed_security_guards": {
+            "trusted_domain_max_risk": TRUSTED_DOMAIN_MAX_RISK,
+            "trusted_domain_notes": (
+                "Only clean, exact allowlisted hosts are capped. Redirects, "
+                "user-content hosts, HTTP URLs, and @-symbol URLs are excluded."
+            ),
+        },
         "evaluation": report.to_dict(orient="records"),
         "versions": {
             "python": platform.python_version(),
             "pandas": pd.__version__,
             "numpy": np.__version__,
+            "scipy": scipy.__version__,
             "scikit_learn": sklearn.__version__,
+            "joblib": joblib.__version__,
+            "tldextract": tldextract.__version__,
         },
     }
 
@@ -647,8 +877,16 @@ def main():
 
     save_confusion_matrix(lexical_result["confusion_matrix"], "Lexical Random Forest Model", "confusion_matrix_lexical.png")
     save_confusion_matrix(hybrid_result["confusion_matrix"], "Hybrid NLP + Lexical Model", "confusion_matrix_hybrid.png")
-    save_confusion_matrix(final_result["confusion_matrix"], "Final System (ML + rules)", "confusion_matrix_final.png")
-    save_confusion_matrix(final_result["confusion_matrix"], "Final System (ML + rules)", "confusion_matrix.png")
+    save_confusion_matrix(
+        final_result["confusion_matrix"],
+        "Final System (validated policy)",
+        "confusion_matrix_final.png",
+    )
+    save_confusion_matrix(
+        final_result["confusion_matrix"],
+        "Final System (validated policy)",
+        "confusion_matrix.png",
+    )
 
     save_reliability_curve(y_test, test_ml_scores, "reliability_curve.png")
     save_feature_importance(lexical_model, x_val_lexical, y_val, "feature_importance.png")
