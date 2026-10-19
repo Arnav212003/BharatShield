@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import json
 import os
 import unittest
@@ -6,6 +7,7 @@ import unittest
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_DIR = os.path.join(BASE_DIR, "model")
+DATA_PATH = os.path.join(BASE_DIR, "data", "phishing.csv")
 
 
 class TestModelArtifacts(unittest.TestCase):
@@ -17,6 +19,7 @@ class TestModelArtifacts(unittest.TestCase):
             "hybrid_model.pkl",
             "model_config.json",
             "model_evaluation_report.csv",
+            "training_metadata.json",
         ]
 
         for file_name in required_files:
@@ -53,13 +56,40 @@ class TestModelArtifacts(unittest.TestCase):
         required_columns = {
             "Model",
             "Accuracy",
+            "Domain-Macro Accuracy",
             "Precision",
             "Recall",
             "F1 Score",
             "ROC-AUC",
+            "FP",
+            "FN",
         }
 
         self.assertTrue(required_columns.issubset(reader.fieldnames))
+
+    def test_training_metadata_records_split_checks(self):
+        path = os.path.join(MODEL_DIR, "training_metadata.json")
+
+        with open(path, "r", encoding="utf-8") as file:
+            metadata = json.load(file)
+
+        self.assertEqual(metadata["dataset"]["provenance_status"], "unverified")
+        self.assertEqual(len(metadata["dataset"]["sha256"]), 64)
+        self.assertEqual(metadata["training"]["seed"], 42)
+
+        digest = hashlib.sha256()
+
+        with open(DATA_PATH, "rb") as file:
+            for chunk in iter(lambda: file.read(1024 * 1024), b""):
+                digest.update(chunk)
+
+        self.assertEqual(metadata["dataset"]["sha256"], digest.hexdigest())
+
+        for overlap in metadata["overlap_checks"].values():
+            self.assertEqual(overlap, 0)
+
+        self.assertGreater(metadata["splits"]["test"]["rows"], 0)
+        self.assertGreater(len(metadata["evaluation"]), 0)
 
 
 if __name__ == "__main__":

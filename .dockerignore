@@ -1,5 +1,8 @@
 .git/
 .github/
+data/
+docs/
+tests/
 .venv/
 venv/
 __pycache__/
@@ -8,5 +11,6 @@ __pycache__/
 .pytest_cache/
 .streamlit/secrets.toml
 .env
+README.md
 .DS_Store
 Thumbs.db
