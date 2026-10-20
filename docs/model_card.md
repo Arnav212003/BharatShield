@@ -1,128 +1,156 @@
 # BharatShield Model Card
 
-## Project Goal
+Values on this page come from `model/model_config.json`,
+`model/model_evaluation_report.csv` and `model/training_metadata.json`
+(models generated 2026-10-20 18:55 UTC).
 
-BharatShield warns about phishing-style URLs and scam messages before a user
-opens a link or shares information such as an OTP, UPI PIN, CVV, or password.
+## What it is for
 
-## Intended Use
+A student project that gives a second opinion on a link or message before a
+user opens it or shares anything. It is not meant for automatic blocking,
+banking decisions, or replacing browser safe browsing.
 
-- Final-year project demonstration
-- Portfolio discussion for machine learning, security, APIs, and testing
-- Educational fraud-awareness experiments
-- Local screening of URL and message patterns
+## URL models
 
-## Not Intended For
+| Part | What it is |
+| --- | --- |
+| Input | Canonical URL key: no scheme, no `www.`, lower case, sorted query |
+| Model 1 | `HistGradientBoostingClassifier` on 17 numeric URL features (300 iterations, learning rate 0.1, 63 leaf nodes, balanced class weights) |
+| Model 2 | `LogisticRegression` (C = 4, balanced class weights) on the same 17 features (MaxAbs scaled) + TF-IDF character 3-5 grams (`char_wb`, 50,000 features) |
+| Blend | 0.3 x model 1 + 0.7 x model 2 |
+| Cutoffs | Safe below 0.50, Suspicious from 0.50, Phishing from 0.80 |
+| Rules | Fixed (below), not learned |
 
-- Automatic production blocking without independent validation
-- Banking, legal, compliance, or law-enforcement decisions
-- Replacing browser safe-browsing or bank fraud systems
+The 17 features: URL length, host length, path length, host dots, host
+hyphens, host digits, subdomain count, path depth, query parameters, path
+digits, percent signs, longest path word, has `@`, IP address, keyword count,
+suspicious TLD, domain name entropy.
 
-## Training Data
+Choices made on the validation split only (test sets were not used):
 
-The saved model was trained from a local two-column URL/label CSV with SHA-256:
+- Blend weight: highest PR-AUC over weights 0.0 to 1.0.
+- Safe cutoff: highest F1 with recall >= 90% (validation precision 92.62%,
+  recall 91.31%, FPR 2.58%).
+- Phishing cutoff: lowest cutoff with precision >= 98%.
 
-```text
-b1a7c26b354632c80817e10af154c4e5007f9480fb43a8ac2730491500fa2780
+### Rules
+
+| Rule | Effect on the score |
+| --- | --- |
+| Brand name on a non-official domain (`sbi-kyc-update.com`, `paypa1.com`) | +0.30, and at least Suspicious |
+| IP address as host | +0.25 |
+| `@` in the address (`paypal.com@evil.com`) | +0.25 |
+| Punycode host (`xn--`) | +0.15 |
+| Redirect to another site in the query | +0.15 |
+| URL shortener | At least Suspicious |
+| Free hosting tenant without a brand match | At most Suspicious |
+| Trusted list (72 sites) or `.gov.in` / `.nic.in` / `.bank.in` | At most 0.20 (Safe) |
+
+A trusted domain behind a redirect, an IP or an `@` is not treated as trusted.
+Not using HTTPS is shown as a warning but does not change the score, because
+in the old data the scheme was a shortcut, not a real signal.
+
+## Results
+
+### External test (the number to quote)
+
+35,988 URLs, 25.9% phishing. Phishing first seen on OpenPhish between
+2026-09-15 and 2026-10-20 (after all training phishing), from sites never seen
+in training, plus held-out Common Crawl pages and Tranco homepages from sites
+never seen in training.
+
+| System | Precision | Recall | F1 | FPR | ROC-AUC | PR-AUC |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| ML blend | 89.83% | 91.93% | 90.87% | 3.64% | 98.50% | 97.09% |
+| Final system (ML + rules) | 89.67% | 91.95% | 90.80% | 3.71% | 97.96% | 94.60% |
+
+95% Wilson intervals for the final system: recall 91.38% to 92.49%, FPR 3.49%
+to 3.94%. Confusion matrix: TN 25,670, FP 988, FN 751, TP 8,579.
+
+By source (final system):
+
+| Slice | Rows | Flagged |
+| --- | ---: | ---: |
+| OpenPhish phishing | 9,330 | 91.95% (recall) |
+| Phishing on free hosting | 6,320 | 99.95% (recall) |
+| Common Crawl pages | 18,658 | 1.88% (false positives) |
+| Tranco homepages | 8,000 | 7.96% (false positives) |
+| Legitimate pages on free hosting | 180 | 11.11% (false positives) |
+
+The Tranco rate is partly label noise (Tranco also ranks spam and gambling
+domains), but it is still the weakest part.
+
+### Internal test
+
+Site-grouped split of the training sources, 83,974 URLs:
+
+| Model | Precision | Recall | F1 | FPR |
+| --- | ---: | ---: | ---: | ---: |
+| Gradient boosting alone | 83.47% | 84.92% | 84.19% | 5.96% |
+| Logistic regression alone | 91.82% | 91.43% | 91.62% | 2.89% |
+| ML blend | 93.30% | 93.05% | 93.17% | 2.37% |
+| Final system | 93.21% | 93.08% | 93.14% | 2.40% |
+
+[ablation_study.md](ablation_study.md) explains what each part adds, including
+the finding that the rules do not improve the overall numbers.
+
+### Before and after on simple inputs
+
+| URL | Version 1 (PhiUSIIL) | Now |
+| --- | --- | --- |
+| `google.com` | Phishing, 100 | Safe, 20 |
+| `http://www.google.com` | Phishing, 100 | Safe, 20 |
+| `amazon.in` | Phishing, 100 | Safe, 20 |
+| `https://www.flipkart.com/` | Suspicious, 53 | Safe, 12 |
+| `https://sbi-kyc-update.com` | Phishing, 92 | Phishing, 100 |
+| `https://accounts.google.com.evil.tk` | Phishing, 77 | Phishing, 100 |
+| `https://g00gle.com` | Phishing, 74 | Suspicious, 50 |
+
+## Message scanner
+
+Rule-based, no machine learning (`src/scam_message.py`). It checks requests for
+OTP, UPI PIN, PIN, CVV, passwords, card details and Aadhaar/PAN, plus 14
+patterns: urgency, account/KYC threats, lottery and reward bait, "scan QR to
+receive money", remote access apps, payment requests, family emergency,
+electricity disconnection, parcel/customs, fake police or "digital arrest",
+task jobs, investment, instant loans, and "move to WhatsApp/Telegram". Hinglish
+phrases are included (*turant*, *bijli kat jayega*, *naya number*, *paise
+bhejo*). Status: Low Risk below 35, Suspicious from 35, Likely Fraud from 70.
+Links in a message are scored by the URL system.
+
+`tests/data/sample_messages.csv` has 98 messages (50 scam, 48 normal) that I
+wrote. With link scanning all 98 are classified correctly, but the rules were
+tuned on these same messages, so this is a regression check and not an
+accuracy number. I did not find a public labelled dataset of Indian scam SMS
+to test on.
+
+## Limitations
+
+- **URL only.** No page content is fetched; no WHOIS, domain age, DNS,
+  certificate or live reputation lookup. Phishing on ordinary-looking or hacked
+  domains is the main source of misses.
+- **The trusted list does real work.** The ML score alone is sometimes high for
+  well-known sites (`amazon.in` 61, `hdfcbank.com/personal/login` 94). The
+  trusted list fixes those, but a site not on the list gets no such help.
+- **Hand-maintained lists.** Trusted sites, brands and free hosting platforms
+  in `config/trusted_domains.json` are edited by hand. Brand prefix matching
+  causes some false alarms (see the ablation study).
+- **Free hosting.** Normal pages on free hosting platforms show as Suspicious.
+- **External test construction.** Legitimate URLs are presumed legitimate;
+  the time split is strict only for OpenPhish; feed phishing is mostly global.
+- **Message scanner** is rule-based and has no independent accuracy number.
+- **Drift.** Phishing changes quickly, so the model needs regular retraining.
+
+## Reproduce
+
+```bash
+python -m scripts.download_data
+python -m scripts.build_dataset
+python -m src.train_model
 ```
 
-Its exact source and license are unverified. The raw CSV is therefore ignored
-and not part of the current project tree. This limitation also means model
-artifact usage rights should be confirmed before commercial deployment.
-
-After duplicate/conflict removal, training uses a reproducible 100,000-row
-sample. The test split has 20,532 rows: 16,325 safe and 4,207 phishing.
-`docs/dataset.md` contains the complete cleanup and split record.
-
-## Features And Models
-
-The lexical model uses 22 features, including URL/domain length, punctuation,
-digits, explicit HTTPS, suspicious words/TLDs, IP addresses, shortened domains,
-query presence, and subdomain structure.
-
-The hybrid model adds TF-IDF character n-grams. Current model scores are blended
-with equal weights.
-
-Training uses a root-domain group split. The validation split selects blend
-weights and evaluates 20 threshold/policy combinations. The test split is not
-used for those choices. The current selection is:
-
-```text
-alert threshold: 0.50
-phishing display threshold: 0.70
-risk policy: no_adjustment
-clean trusted-host maximum: 0.20
-```
-
-Candidate pattern bonuses and reductions do not modify the current model score.
-A separate fixed guard caps a clean exact-host allowlist match at `0.20`.
-Redirects, user-hosted pages, HTTP URLs, and `@`-symbol URLs do not receive that
-cap. The rule layer also reports observed signals and redirect behavior.
-
-## Evaluation
-
-| Metric | Value |
-| --- | ---: |
-| Accuracy | 95.20% |
-| Domain-Macro Accuracy | 92.97% |
-| Precision | 86.75% |
-| Recall | 90.40% |
-| F1 Score | 88.53% |
-| ROC-AUC | 98.13% |
-| PR-AUC | 95.06% |
-| Brier Score | 0.0593 |
-| False Positive Rate | 3.56% |
-| True Negatives | 15,744 |
-| False Positives | 581 |
-| False Negatives | 404 |
-| True Positives | 3,803 |
-
-The test set phishing share is 20.49%. At an assumed 1% prevalence, the test
-recall and false-positive rate imply about 20.42% precision. This estimate
-assumes those rates transfer unchanged, which may not hold after deployment.
-
-## Explainability
-
-The UI reports readable reasons generated from URL and message signals. These
-are deterministic rule explanations, not a claim that each reason caused the
-model prediction. `model/feature_importance.png` provides global permutation
-importance on validation data; it is not a per-URL explanation.
-
-The displayed score certainty is based on distance from decision cutoffs and
-model agreement. It is a UI heuristic, not a calibrated probability.
-
-## Reproducibility
-
-- Python: 3.11.9
-- scikit-learn: 1.8.0
-- NumPy: 1.26.4
-- SciPy: 1.17.1
-- pandas: 2.3.3
-- joblib: 1.5.3
-- tldextract: 5.3.1
-- Random seed: 42
-
-Exact settings, split checks, and package versions are saved in
-`model/training_metadata.json`. Runtime, training, and development dependencies
-are pinned in separate requirement files.
-
-## Known Limitations
-
-- Dataset provenance and licensing are unresolved.
-- Evaluation is from one dataset and one group split, not a recent temporal or
-  independently sourced holdout.
-- Most training URLs are scheme-less, so the explicit HTTPS feature has very
-  little support in this dataset.
-- The largest test domain contributes 13.41% of test rows.
-- Trusted-domain and message-pattern lists require manual maintenance.
-- The message detector is rule-based and has no labeled message benchmark.
-- No page content, WHOIS, DNS, certificate, or live reputation data is used.
-- Adversaries and legitimate URL patterns can change after training.
-
-## Next Validation Work
-
-- Confirm or replace the training dataset with a licensed source.
-- Evaluate on a time-separated and independently collected URL set.
-- Build a labeled Indian SMS/email benchmark for the message rules.
-- Measure latency and error rates in a controlled deployment.
-- Review false positives and false negatives by domain and attack type.
+Seed 42, Python 3.11.9, pandas 2.3.3, NumPy 1.26.4, scikit-learn 1.8.0,
+tldextract 5.3.1. Settings, split sizes and all metrics are written to
+`model/training_metadata.json`; raw file hashes to `data/sources.json`.
+Downloading on a later date gives newer feeds, so the numbers will move a
+little.
