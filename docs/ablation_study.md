@@ -1,22 +1,43 @@
 # Ablation Study
 
-This table shows how each layer improves the system. The values come from the latest `model/model_evaluation_report.csv`.
+These values come from `model/model_evaluation_report.csv`. Every row uses the
+same untouched domain-separated test split and the `0.50` threshold selected on
+validation data.
 
-| System | Accuracy | Domain-Macro Accuracy | Precision | Recall | FPR | F1 Score | ROC-AUC | PR-AUC |
+| System | Accuracy | Domain-Macro Accuracy | Precision | Recall | FPR | F1 | ROC-AUC | PR-AUC |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Lexical Random Forest | 84.03% | 79.06% | 57.06% | 89.18% | 17.29% | 69.60% | 93.40% | 85.48% |
-| Hybrid NLP + Lexical Logistic Regression | 88.10% | 83.24% | 64.42% | 93.63% | 13.33% | 76.32% | 97.04% | 92.24% |
-| ML only blend | 89.64% | 85.43% | 67.31% | 96.13% | 12.03% | 79.18% | 98.13% | 95.06% |
-| Final system, ML + rules | 93.94% | 91.17% | 81.14% | 91.75% | 5.49% | 86.12% | 97.86% | 94.58% |
+| Lexical Random Forest | 90.25% | 85.41% | 76.36% | 75.92% | 6.06% | 76.14% | 93.40% | 85.48% |
+| Hybrid NLP + Lexical Logistic Regression | 91.47% | 87.96% | 75.00% | 87.57% | 7.52% | 80.80% | 97.03% | 92.21% |
+| Equal-weight ML blend | 95.20% | 92.97% | 86.75% | 90.40% | 3.56% | 88.53% | 98.13% | 95.06% |
+| Final validated policy | 95.20% | 92.97% | 86.75% | 90.40% | 3.56% | 88.53% | 98.13% | 95.06% |
 
-## Observation
+## What Changed
 
-The hybrid model improves over the lexical-only model because character TF-IDF captures phishing-style text patterns inside URLs. The blended ML model gets the best recall, but it still has a higher false-positive rate.
+The hybrid model improves recall over the lexical-only model because character
+TF-IDF captures spelling and token patterns that handcrafted counts can miss.
+Blending both models gives the strongest F1 score and lowest false-positive
+rate in this comparison.
 
-The final rule layer improves precision and F1 score. It also reduces false positives from 12.03% to 5.49%. This is useful for a fraud-warning tool because users should not see too many unnecessary alerts.
+Four score policies and five thresholds were compared on the validation split.
+Only candidates with at least 90% validation recall were considered when that
+constraint could be met. The winning setup used equal model weights, threshold
+`0.50`, and the `no_adjustment` policy.
 
-Domain-macro accuracy gives every root domain equal weight. The final system scores 91.17% on this measure, compared with 93.94% row-level accuracy, so the effect of large domains is visible instead of hidden.
+The last two rows are therefore identical. This is intentional: validation did
+not support the candidate pattern bonuses or reductions, so the current runtime
+does not apply them. A fixed exact-host trusted guard still exists, but it did
+not change a test-set classification at the selected threshold. Security rules
+also provide readable reasons, redirect detection, and trusted-list reporting.
 
-## Trade-off
+## Remaining Trade-off
 
-The final system has slightly lower recall than the ML-only blend, but it gives a better balance between catching fraud and avoiding false alarms. For a student project and demo use case, this is a reasonable trade-off.
+The final test confusion matrix is:
+
+```text
+TN = 15,744   FP = 581
+FN =    404   TP = 3,803
+```
+
+The test set contains 20.49% phishing URLs. If phishing prevalence were 1% and
+the same recall/FPR held, estimated precision would be about 20.42%. This is a
+scenario calculation, not a measurement from production traffic.

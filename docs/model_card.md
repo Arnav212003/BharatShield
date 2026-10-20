@@ -2,122 +2,127 @@
 
 ## Project Goal
 
-BharatShield detects suspicious URLs and scam-style messages. The goal is to give users an explainable warning before they open a phishing link or share sensitive information such as OTP, UPI PIN, CVV, passwords, or card details.
+BharatShield warns about phishing-style URLs and scam messages before a user
+opens a link or shares information such as an OTP, UPI PIN, CVV, or password.
 
 ## Intended Use
 
-- Final-year computer science project demonstration
-- Portfolio project for AI, cybersecurity, and backend/API skills
-- Educational fraud-awareness tool
-- Local testing of URL and message risk patterns
+- Final-year project demonstration
+- Portfolio discussion for machine learning, security, APIs, and testing
+- Educational fraud-awareness experiments
+- Local screening of URL and message patterns
 
 ## Not Intended For
 
-- Production fraud blocking without additional validation
-- Legal, banking, or compliance decisions
-- Replacing browser security systems, bank fraud systems, or official cybercrime reporting
+- Automatic production blocking without independent validation
+- Banking, legal, compliance, or law-enforcement decisions
+- Replacing browser safe-browsing or bank fraud systems
 
-## Data
+## Training Data
 
-The URL dataset is stored in `data/phishing.csv` with two columns:
+The saved model was trained from a local two-column URL/label CSV with SHA-256:
 
-- `URL`
-- `Label`
+```text
+b1a7c26b354632c80817e10af154c4e5007f9480fb43a8ac2730491500fa2780
+```
 
-Supported labels are normalized during training. Malicious labels such as `bad`, `phishing`, `fraud`, `malicious`, and `unsafe` map to `1`. Safe labels such as `good`, `safe`, `legitimate`, and `benign` map to `0`.
+Its exact source and license are unverified. The raw CSV is therefore ignored
+and not part of the current project tree. This limitation also means model
+artifact usage rights should be confirmed before commercial deployment.
 
-The current repository dataset contains more safe URLs than phishing URLs, so the training code uses balanced class weights. A short dataset profile is available in `docs/dataset.md`.
+After duplicate/conflict removal, training uses a reproducible 100,000-row
+sample. The test split has 20,532 rows: 16,325 safe and 4,207 phishing.
+`docs/dataset.md` contains the complete cleanup and split record.
 
-## Feature Design
+## Features And Models
 
-The URL model uses lexical features such as:
+The lexical model uses 22 features, including URL/domain length, punctuation,
+digits, explicit HTTPS, suspicious words/TLDs, IP addresses, shortened domains,
+query presence, and subdomain structure.
 
-- URL length
-- Domain length
-- Number of dots, hyphens, slashes, query markers, digits, and special characters
-- Explicit HTTPS scheme flag
-- IP-address usage
-- Suspicious keywords
-- Shortened-link domains
-- Suspicious TLDs
-- Subdomain count
-- Hyphen or digit usage in the domain
+The hybrid model adds TF-IDF character n-grams. Current model scores are blended
+with equal weights.
 
-The hybrid model combines these lexical features with TF-IDF character n-grams. Character n-grams are useful for phishing URLs because attackers often use small spelling changes, fake brand words, or unusual token patterns.
+Training uses a root-domain group split. The validation split selects blend
+weights and evaluates 20 threshold/policy combinations. The test split is not
+used for those choices. The current selection is:
 
-## Model Pipeline
+```text
+alert threshold: 0.50
+phishing display threshold: 0.70
+risk policy: no_adjustment
+clean trusted-host maximum: 0.20
+```
 
-Training is handled by `src/train_model.py`.
-
-1. Load and normalize the dataset.
-2. Remove duplicate and conflicting URLs.
-3. Split by root domain to reduce domain memorization.
-4. Train a Random Forest model on lexical features.
-5. Train a Logistic Regression model on lexical + TF-IDF features.
-6. Select blend weights on validation data.
-7. Evaluate the final model on the test split.
-8. Save model artifacts, metrics, confusion matrices, feature importance, blend config, and training metadata.
-
-## Explainability
-
-`src/security_layers.py` converts URL features into human-readable reasons, such as:
-
-- No HTTPS found
-- Suspicious keyword found
-- IP address used in URL
-- Shortened URL detected
-- Suspicious domain extension found
-- Too many subdomains
-- Trusted official domain detected
-
-The message scanner also reports reasons such as sensitive information requests, urgency, account-blocking threats, reward bait, payment requests, and suspicious embedded links.
+Candidate pattern bonuses and reductions do not modify the current model score.
+A separate fixed guard caps a clean exact-host allowlist match at `0.20`.
+Redirects, user-hosted pages, HTTP URLs, and `@`-symbol URLs do not receive that
+cap. The rule layer also reports observed signals and redirect behavior.
 
 ## Evaluation
 
-Saved metrics are stored in:
-
-```text
-model/model_evaluation_report.csv
-```
-
-The project reports accuracy, domain-macro accuracy, precision, recall, F1 score, ROC-AUC, threshold, false-positive rate, PR-AUC, Brier score, and confusion counts for the saved models. Dataset and split details are stored in `model/training_metadata.json`.
-
-Latest retrained final-system metrics:
-
 | Metric | Value |
 | --- | ---: |
-| Accuracy | 93.94% |
-| Domain-Macro Accuracy | 91.17% |
-| Precision | 81.14% |
-| Recall | 91.75% |
-| F1 Score | 86.12% |
-| ROC-AUC | 97.86% |
-| PR-AUC | 94.58% |
-| False Positive Rate | 5.49% |
-| False Positives | 897 |
-| False Negatives | 347 |
+| Accuracy | 95.20% |
+| Domain-Macro Accuracy | 92.97% |
+| Precision | 86.75% |
+| Recall | 90.40% |
+| F1 Score | 88.53% |
+| ROC-AUC | 98.13% |
+| PR-AUC | 95.06% |
+| Brier Score | 0.0593 |
+| False Positive Rate | 3.56% |
+| True Negatives | 15,744 |
+| False Positives | 581 |
+| False Negatives | 404 |
+| True Positives | 3,803 |
 
-For a fraud-warning system, recall is especially important because a missed phishing URL can cause real harm. Precision still matters because too many false alarms reduce user trust.
+The test set phishing share is 20.49%. At an assumed 1% prevalence, the test
+recall and false-positive rate imply about 20.42% precision. This estimate
+assumes those rates transfer unchanged, which may not hold after deployment.
 
-The layer-by-layer comparison is available in `docs/ablation_study.md`.
+## Explainability
+
+The UI reports readable reasons generated from URL and message signals. These
+are deterministic rule explanations, not a claim that each reason caused the
+model prediction. `model/feature_importance.png` provides global permutation
+importance on validation data; it is not a per-URL explanation.
+
+The displayed score certainty is based on distance from decision cutoffs and
+model agreement. It is a UI heuristic, not a calibrated probability.
+
+## Reproducibility
+
+- Python: 3.11.9
+- scikit-learn: 1.8.0
+- NumPy: 1.26.4
+- SciPy: 1.17.1
+- pandas: 2.3.3
+- joblib: 1.5.3
+- tldextract: 5.3.1
+- Random seed: 42
+
+Exact settings, split checks, and package versions are saved in
+`model/training_metadata.json`. Runtime, training, and development dependencies
+are pinned in separate requirement files.
 
 ## Known Limitations
 
-- The system does not fetch live pages or inspect page content.
-- The exact dataset source and license are unverified.
-- Evaluation uses one dataset and one reproducible domain-group split, not an external temporal holdout.
-- The largest test domain contributes 13.41% of test rows; domain-macro accuracy is included to show this effect.
-- The trusted-domain list is static and must be maintained.
-- Attackers can create new TLD, redirect, and message patterns.
-- The scam-message detector is rule-based and should be expanded with real labeled SMS/email data before production use.
-- The confidence score is a decision-support score, not a mathematical guarantee.
+- Dataset provenance and licensing are unresolved.
+- Evaluation is from one dataset and one group split, not a recent temporal or
+  independently sourced holdout.
+- Most training URLs are scheme-less, so the explicit HTTPS feature has very
+  little support in this dataset.
+- The largest test domain contributes 13.41% of test rows.
+- Trusted-domain and message-pattern lists require manual maintenance.
+- The message detector is rule-based and has no labeled message benchmark.
+- No page content, WHOIS, DNS, certificate, or live reputation data is used.
+- Adversaries and legitimate URL patterns can change after training.
 
-## Future Improvements
+## Next Validation Work
 
-- Add WHOIS/domain-age signals.
-- Add DNS and certificate metadata.
-- Add live URL reputation sources.
-- Validate on an independently sourced, time-separated URL dataset.
-- Add the confirmed dataset source, collection date, and license.
-- Add multilingual scam-message examples.
-- Add a dedicated linter and type checker to CI.
+- Confirm or replace the training dataset with a licensed source.
+- Evaluate on a time-separated and independently collected URL set.
+- Build a labeled Indian SMS/email benchmark for the message rules.
+- Measure latency and error rates in a controlled deployment.
+- Review false positives and false negatives by domain and attack type.

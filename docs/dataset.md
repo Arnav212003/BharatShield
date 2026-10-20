@@ -1,61 +1,77 @@
 # Dataset Notes
 
-This note documents the dataset as it exists in this repository. The exact original download link/source should be added before final submission if the file was collected from an external website.
+This document records only facts supported by the local file and training
+metadata. The original download page and license have not been identified, so
+the source is marked unverified instead of being guessed.
 
-## Provenance Status
+## Provenance
 
 | Field | Current value |
 | --- | --- |
 | Source | Unverified |
 | License | Unknown |
+| Redistribution allowed | No |
 | SHA-256 | `b1a7c26b354632c80817e10af154c4e5007f9480fb43a8ac2730491500fa2780` |
 
-The hash identifies the exact file used for the saved models. It does not establish ownership or licensing. The project should not claim a public source until the original download page is confirmed.
+The hash identifies the exact file used for the saved model. It does not prove
+ownership, origin, or permission to redistribute the data.
 
-## File
+`data/phishing.csv` is now ignored and removed from the current Git index. A
+local copy is still needed for retraining. This does not remove older copies
+from existing Git history; doing that would require a coordinated history
+rewrite and force-push, which is intentionally outside this change.
 
-```text
-data/phishing.csv
-```
+The MIT license covers project code and documentation, not this dataset.
 
-## Columns
+## Expected File
 
-| Column | Meaning |
-| --- | --- |
-| `URL` | URL string used for feature extraction |
-| `Label` | `good` for safe URLs and `bad` for phishing or unsafe URLs |
+The first two CSV columns are treated as URL and label. The local file used for
+the current model had 549,346 raw rows:
 
-## Current Size
-
-The raw CSV contains 549,346 rows:
-
-| Label | Count |
+| Raw label | Count |
 | --- | ---: |
 | `good` | 392,924 |
 | `bad` | 156,422 |
 
-After conflicting and duplicate normalized URLs are removed, 501,444 unique rows remain: 392,867 safe and 108,577 phishing. Training then takes a reproducible 100,000-row sample containing 78,492 safe and 21,508 phishing URLs.
+Supported labels are listed in `data/README.md`.
 
-## Training Cleanup
+## Cleanup And Sampling
 
-`src/train_model.py` performs these steps before training:
+Training performs these steps in a fixed order:
 
-1. Keeps the first two columns and normalizes them as `url` and `label`.
-2. Converts known safe labels to `0` and unsafe labels to `1`.
-3. Removes rows with missing URL or label values.
-4. Builds a normalized URL key by removing scheme, `www.`, and trailing slash.
-5. Removes duplicate URLs and URLs that appear with conflicting labels.
-6. Samples 100,000 rows for training speed and reproducibility.
-7. Splits data by root domain, so the same domain does not appear on both train and test sides.
+1. Remove rows with missing or unsupported labels.
+2. Normalize a comparison key by removing scheme, `www.`, and trailing slash.
+3. Remove every normalized URL that has conflicting labels.
+4. Keep one copy of each remaining normalized URL.
+5. Take a reproducible 100,000-row sample with seed `42`.
+6. Split by root domain into train, validation, and test sets.
 
-## Important Limitation
+The cleanup removed 47,902 duplicate/conflicting rows. Before sampling, 501,444
+unique rows remained: 392,867 safe and 108,577 phishing. The sample contains
+78,492 safe and 21,508 phishing URLs.
 
-Most URLs in this CSV do not include `http://` or `https://`. The HTTPS feature is `1` only when the original URL explicitly starts with `https://`; it is `0` for HTTP and scheme-less input. A missing scheme remains neutral in the explanation layer because it does not prove that a site uses HTTP.
+## Saved Splits
 
-## Why Domain-Based Split Is Used
+| Split | Rows | Safe | Phishing | Phishing share | Unique domains |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Train | 62,189 | 48,647 | 13,542 | 21.78% | 27,868 |
+| Validation | 17,279 | 13,520 | 3,759 | 21.75% | 6,968 |
+| Test | 20,532 | 16,325 | 4,207 | 20.49% | 8,710 |
 
-A normal random split can accidentally put similar URLs from the same domain in both training and testing. That makes the model look better than it really is. BharatShield uses a domain-based split to reduce this memorization problem.
+Root-domain overlap and normalized-URL overlap are zero for every split pair.
+The largest test domain contributes 13.41% of test rows, so domain-macro
+accuracy is reported alongside row-level accuracy.
 
-The saved split contains 62,189 training rows, 17,279 validation rows, and 20,532 test rows. Domain and normalized-URL overlap between all three splits is zero. The largest test domain still contributes 13.41% of test rows, so the project reports domain-macro accuracy alongside normal row-level accuracy.
+## Scheme Limitation
 
-The full machine-readable record is stored in `model/training_metadata.json`.
+Only 0.018% of sampled URLs explicitly use HTTP and 0.002% explicitly use
+HTTPS; 99.978% have no scheme. The HTTPS feature is therefore `1` only for an
+explicit `https://` prefix and `0` for HTTP or scheme-less input. A missing
+scheme does not produce the human-readable "No HTTPS" reason because absence
+of a scheme is not proof that the real site uses HTTP.
+
+## Reproducibility Record
+
+`model/training_metadata.json` contains the file hash, cleanup counts, split
+counts, overlap checks, chosen validation policy, model settings, and exact
+model-sensitive package versions.

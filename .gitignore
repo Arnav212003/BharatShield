@@ -11,9 +11,18 @@ venv/
 .idea/
 
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+*.log
 
 .DS_Store
 Thumbs.db
 
 .streamlit/secrets.toml
+
+# Local training data. Its source/license must be verified before sharing.
+/data/phishing.csv
 
