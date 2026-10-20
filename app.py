@@ -1,28 +1,28 @@
+import logging
 import os
-import sys
 from datetime import datetime
 
 import pandas as pd
 import streamlit as st
 
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SRC_DIR = os.path.join(BASE_DIR, "src")
-MODEL_DIR = os.path.join(BASE_DIR, "model")
+MODEL_DIR = os.path.abspath(
+    os.getenv(
+        "BHARATSHIELD_MODEL_DIR",
+        os.path.join(BASE_DIR, "model"),
+    )
+)
 
-if SRC_DIR not in sys.path:
-    sys.path.append(SRC_DIR)
+logger = logging.getLogger("bharatshield.ui")
 
 
 try:
-    from features import extract_features
-    from predict import predict_url
-    from scam_message import analyze_scam_message
-    from security_layers import get_domain, is_trusted_domain
+    from src.predict import MAX_URL_LENGTH, predict_url, predict_url_details
+    from src.scam_message import MAX_MESSAGE_LENGTH, analyze_scam_message
     from ui.style import load_css
-except Exception as error:
+except Exception:
+    logger.exception("BharatShield could not start")
     st.error("Project files or model files could not be loaded.")
-    st.exception(error)
     st.stop()
 
 
@@ -35,7 +35,7 @@ st.set_page_config(
 try:
     load_css()
 except Exception:
-    pass
+    logger.warning("Custom CSS could not be loaded", exc_info=True)
 
 
 def show_url_status(result):
@@ -56,38 +56,50 @@ def show_message_status(status):
         st.error("🚨 Likely Fraud Message")
 
 
-def show_metrics(risk_score, status, confidence):
+def show_metrics(risk_score, status, score_certainty):
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        st.metric("Risk Score", f"{risk_score}%")
+        st.metric(
+            "Risk Score",
+            f"{risk_score}%",
+            help="Project decision score; it is not a guaranteed probability.",
+        )
 
     with col2:
         st.metric("Status", status)
 
     with col3:
-        st.metric("Confidence", f"{confidence}%")
+        st.metric(
+            "Score Certainty",
+            f"{score_certainty}%",
+            help=(
+                "Heuristic based on distance from the decision cutoffs and, "
+                "for URLs, agreement between the two models."
+            ),
+        )
 
 
-def build_url_analysis(url):
-    features = extract_features(url)
-    root_domain, full_domain = get_domain(url)
+def build_url_analysis(prediction):
+    features = prediction["features"]
+    explicit_scheme = prediction["explicit_scheme"]
 
     return {
-        "Root Domain": root_domain,
-        "Full Domain": full_domain,
-        "URL Length": features[0],
-        "Domain Length": features[1],
-        "HTTPS Used": "Yes" if features[12] == 1 else "No",
-        "Suspicious Keyword": "Yes" if features[14] == 1 else "No",
-        "IP Address Used": "Yes" if features[15] == 1 else "No",
-        "Short URL": "Yes" if features[16] == 1 else "No",
-        "Suspicious TLD": "Yes" if features[17] == 1 else "No",
-        "Query Parameters": "Yes" if features[18] == 1 else "No",
-        "Subdomain Count": features[19],
-        "Hyphen In Domain": "Yes" if features[20] == 1 else "No",
-        "Digit In Domain": "Yes" if features[21] == 1 else "No",
-        "Trusted Domain": "Yes" if is_trusted_domain(url) else "No",
+        "Root Domain": prediction["root_domain"],
+        "Full Domain": prediction["full_domain"],
+        "URL Length": features["URL Length"],
+        "Domain Length": features["Domain Length"],
+        "Explicit Scheme": explicit_scheme.upper() if explicit_scheme else "Not provided",
+        "Explicit HTTPS": "Yes" if features["HTTPS"] == 1 else "No",
+        "Suspicious Keyword": "Yes" if features["Suspicious Keyword"] == 1 else "No",
+        "IP Address Used": "Yes" if features["IP Address"] == 1 else "No",
+        "Short URL": "Yes" if features["Short URL"] == 1 else "No",
+        "Suspicious TLD": "Yes" if features["Suspicious TLD"] == 1 else "No",
+        "Query Parameters": "Yes" if features["Has Query"] == 1 else "No",
+        "Subdomain Count": features["Subdomain Count"],
+        "Hyphen In Domain": "Yes" if features["Hyphen In Domain"] == 1 else "No",
+        "Digit In Domain": "Yes" if features["Digit In Domain"] == 1 else "No",
+        "Static Trusted List Match": "Yes" if prediction["trusted_domain"] else "No",
     }
 
 
@@ -104,13 +116,13 @@ st.markdown(
 )
 
 st.markdown(
-    '<div class="subtitle">AI-Based Fraud Detection System</div>',
+    '<div class="subtitle">Fraud Risk Screening Project</div>',
     unsafe_allow_html=True,
 )
 
 st.markdown(
     '<div class="tagline">'
-    'Phishing URL Detection • OTP & Scam Message Detection • Explainable Risk Analysis'
+    'Phishing URL Detection • Rule-Based Message Screening • Readable Risk Reasons'
     '</div>',
     unsafe_allow_html=True,
 )
@@ -128,12 +140,13 @@ with url_tab:
     url = st.text_input(
         "Enter URL",
         placeholder="https://example.com",
+        max_chars=MAX_URL_LENGTH,
         key="url_input",
     )
 
     if st.button(
         "Scan URL",
-        use_container_width=True,
+        width="stretch",
         key="scan_url",
     ):
         url = url.strip()
@@ -144,14 +157,19 @@ with url_tab:
         else:
             try:
                 with st.spinner("Scanning URL..."):
-                    result, risk_score, reasons, confidence = predict_url(url)
+                    prediction = predict_url_details(url)
+
+                result = prediction["result"]
+                risk_score = prediction["risk_score"]
+                reasons = prediction["reasons"]
+                score_certainty = prediction["score_certainty"]
 
                 st.markdown("### Scan Result")
 
                 show_metrics(
                     risk_score,
                     result,
-                    confidence,
+                    score_certainty,
                 )
 
                 st.progress(risk_score / 100)
@@ -160,7 +178,7 @@ with url_tab:
 
                 st.markdown("### URL Analysis")
 
-                analysis = build_url_analysis(url)
+                analysis = build_url_analysis(prediction)
 
                 analysis_df = pd.DataFrame(
                     analysis.items(),
@@ -169,7 +187,7 @@ with url_tab:
 
                 st.dataframe(
                     analysis_df,
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                 )
 
@@ -182,13 +200,16 @@ with url_tab:
                     "Time": datetime.now().strftime("%H:%M:%S"),
                     "URL": url,
                     "Risk Score": risk_score,
-                    "Confidence": confidence,
+                    "Score Certainty": score_certainty,
                     "Result": result,
                 })
 
-            except Exception as error:
+            except ValueError as error:
+                st.warning(str(error))
+
+            except Exception:
+                logger.exception("URL scan failed")
                 st.error("URL scanning failed.")
-                st.caption(str(error))
 
 
     if st.session_state.url_history:
@@ -200,7 +221,7 @@ with url_tab:
 
         st.dataframe(
             url_history_df,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -209,7 +230,7 @@ with url_tab:
         with col1:
             if st.button(
                 "Clear URL History",
-                use_container_width=True,
+                width="stretch",
             ):
                 st.session_state.url_history = []
                 st.rerun()
@@ -224,7 +245,7 @@ with url_tab:
                 data=csv_data,
                 file_name="bharatshield_url_report.csv",
                 mime="text/csv",
-                use_container_width=True,
+                width="stretch",
             )
 
 
@@ -239,6 +260,7 @@ with message_tab:
     message = st.text_area(
         "Paste message",
         height=160,
+        max_chars=MAX_MESSAGE_LENGTH,
         placeholder=(
             "Example: Your SBI KYC has expired. "
             "Verify immediately at sbi-update.xyz and enter your OTP."
@@ -247,7 +269,7 @@ with message_tab:
 
     if st.button(
         "Scan Message",
-        use_container_width=True,
+        width="stretch",
         key="scan_message",
     ):
         message = message.strip()
@@ -265,14 +287,14 @@ with message_tab:
 
                 risk_score = result["risk_score"]
                 status = result["status"]
-                confidence = result["confidence"]
+                score_certainty = result["score_certainty"]
 
                 st.markdown("### Scan Result")
 
                 show_metrics(
                     risk_score,
                     status,
-                    confidence,
+                    score_certainty,
                 )
 
                 st.progress(risk_score / 100)
@@ -325,10 +347,10 @@ with message_tab:
                                     item["result"]
                                 )
 
-                                if item.get("confidence") is not None:
+                                if item.get("score_certainty") is not None:
                                     st.write(
-                                        "Confidence:",
-                                        f'{item["confidence"]}%'
+                                        "Score Certainty:",
+                                        f'{item["score_certainty"]}%'
                                     )
 
                                 if item.get("reasons"):
@@ -340,14 +362,17 @@ with message_tab:
                 st.session_state.message_history.append({
                     "Time": datetime.now().strftime("%H:%M:%S"),
                     "Risk Score": risk_score,
-                    "Confidence": confidence,
+                    "Score Certainty": score_certainty,
                     "Status": status,
                     "Links Found": len(urls),
                 })
 
-            except Exception as error:
+            except ValueError as error:
+                st.warning(str(error))
+
+            except Exception:
+                logger.exception("Message scan failed")
                 st.error("Message scanning failed.")
-                st.caption(str(error))
 
 
     if st.session_state.message_history:
@@ -359,13 +384,13 @@ with message_tab:
 
         st.dataframe(
             message_history_df,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
         if st.button(
             "Clear Message History",
-            use_container_width=True,
+            width="stretch",
         ):
             st.session_state.message_history = []
             st.rerun()
@@ -412,7 +437,7 @@ with st.expander("📊 Model Analytics"):
 
         st.dataframe(
             report,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -421,7 +446,7 @@ with st.expander("📊 Model Analytics"):
 
         st.image(
             lexical_cm,
-            use_container_width=True,
+            width="stretch",
         )
 
     if os.path.exists(hybrid_cm):
@@ -429,15 +454,15 @@ with st.expander("📊 Model Analytics"):
 
         st.image(
             hybrid_cm,
-            use_container_width=True,
+            width="stretch",
         )
 
     if os.path.exists(final_cm):
-        st.markdown("### Final Calibrated System")
+        st.markdown("### Final Decision System")
 
         st.image(
             final_cm,
-            use_container_width=True,
+            width="stretch",
         )
 
     if os.path.exists(feature_importance):
@@ -445,7 +470,7 @@ with st.expander("📊 Model Analytics"):
 
         st.image(
             feature_importance,
-            use_container_width=True,
+            width="stretch",
         )
 
     if os.path.exists(reliability_curve):
@@ -453,7 +478,7 @@ with st.expander("📊 Model Analytics"):
 
         st.image(
             reliability_curve,
-            use_container_width=True,
+            width="stretch",
         )
 
     if not any(
@@ -475,8 +500,8 @@ with st.expander("📊 Model Analytics"):
 with st.expander("ℹ️ About BharatShield"):
     st.write(
         "BharatShield detects phishing URLs and scam messages "
-        "using machine learning, NLP, URL analysis, domain reputation, "
-        "and explainable security rules."
+        "using URL machine learning, character-pattern analysis, a static "
+        "trusted-domain list, and readable security rules."
     )
 
     st.write(
@@ -488,5 +513,5 @@ with st.expander("ℹ️ About BharatShield"):
 
 
 st.caption(
-    "BharatShield • Machine Learning • NLP • Fraud Detection"
+    "BharatShield • URL Machine Learning • Rule-Based Message Screening"
 )

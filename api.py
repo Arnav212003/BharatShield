@@ -1,22 +1,18 @@
-import os
-import sys
 import logging
+import os
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SRC_DIR = os.path.join(BASE_DIR, "src")
-
-if SRC_DIR not in sys.path:
-    sys.path.append(SRC_DIR)
-
-
-from predict import MAX_URL_LENGTH, predict_url
-from scam_message import MAX_MESSAGE_LENGTH, analyze_scam_message
-from security_layers import get_domain, is_trusted_domain
-
+from src.predict import (
+    MAX_URL_LENGTH,
+    get_model_info,
+    predict_url,
+    predict_url_details,
+)
+from src.scam_message import MAX_MESSAGE_LENGTH, analyze_scam_message
 
 LOG_LEVEL = os.getenv("BHARATSHIELD_LOG_LEVEL", "WARNING").upper()
 logging.basicConfig(
@@ -32,15 +28,76 @@ app = FastAPI(
 )
 
 
+cors_origins = [
+    origin.strip()
+    for origin in os.getenv("BHARATSHIELD_CORS_ORIGINS", "").split(",")
+    if origin.strip()
+]
+
+if cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type"],
+    )
+
+
 class URLRequest(BaseModel):
-    url: str
+    url: str = Field(min_length=1, max_length=MAX_URL_LENGTH)
 
 
 class MessageRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=MAX_MESSAGE_LENGTH)
+
+
+class HomeResponse(BaseModel):
+    name: str
     message: str
+    docs: str
 
 
-@app.get("/")
+class HealthResponse(BaseModel):
+    status: Literal["ok"]
+    model_ready: bool
+    model_generated_at_utc: str | None
+    safe_cutoff: float
+    max_url_length: int
+    max_message_length: int
+
+
+class URLScanResponse(BaseModel):
+    url: str
+    result: str
+    risk_score: int
+    score_certainty: float
+    reasons: list[str]
+    root_domain: str
+    full_domain: str
+    trusted_domain: bool
+
+
+class EmbeddedURLResult(BaseModel):
+    url: str
+    result: str | None = None
+    risk_score: int | None = None
+    score_certainty: float | None = None
+    reasons: list[str] | None = None
+    error: str | None = None
+
+
+class MessageScanResponse(BaseModel):
+    status: str
+    risk_score: int
+    score_certainty: float
+    reasons: list[str]
+    signals: list[str]
+    sensitive_items_requested: list[str]
+    urls: list[str]
+    url_results: list[EmbeddedURLResult]
+
+
+@app.get("/", response_model=HomeResponse)
 def home():
     return {
         "name": "BharatShield",
@@ -49,16 +106,21 @@ def home():
     }
 
 
-@app.get("/health")
+@app.get("/health", response_model=HealthResponse)
 def health():
+    model_info = get_model_info()
+
     return {
         "status": "ok",
+        "model_ready": model_info["ready"],
+        "model_generated_at_utc": model_info["generated_at_utc"],
+        "safe_cutoff": model_info["safe_cutoff"],
         "max_url_length": MAX_URL_LENGTH,
         "max_message_length": MAX_MESSAGE_LENGTH,
     }
 
 
-@app.post("/scan")
+@app.post("/scan", response_model=URLScanResponse)
 def scan_url(request: URLRequest):
     url = request.url.strip()
 
@@ -75,43 +137,32 @@ def scan_url(request: URLRequest):
         )
 
     try:
-        result, risk_score, reasons, confidence = predict_url(url)
-
-        root_domain, full_domain = get_domain(url)
+        details = predict_url_details(url)
 
         logger.info(
             "URL scan completed: result=%s risk_score=%s",
-            result,
-            risk_score,
+            details["result"],
+            details["risk_score"],
         )
 
-        return {
-            "url": url,
-            "result": result,
-            "risk_score": risk_score,
-            "confidence": confidence,
-            "reasons": reasons,
-            "root_domain": root_domain,
-            "full_domain": full_domain,
-            "trusted_domain": is_trusted_domain(url),
-        }
+        return details
 
     except ValueError as error:
         raise HTTPException(
             status_code=400,
             detail=str(error),
-        )
+        ) from error
 
-    except Exception:
+    except Exception as error:
         logger.exception("URL scan failed")
 
         raise HTTPException(
             status_code=500,
             detail="URL scan failed",
-        )
+        ) from error
 
 
-@app.post("/scan-message")
+@app.post("/scan-message", response_model=MessageScanResponse)
 def scan_message(request: MessageRequest):
     message = request.message.strip()
 
@@ -148,12 +199,12 @@ def scan_message(request: MessageRequest):
         raise HTTPException(
             status_code=400,
             detail=str(error),
-        )
+        ) from error
 
-    except Exception:
+    except Exception as error:
         logger.exception("Message scan failed")
 
         raise HTTPException(
             status_code=500,
             detail="Message scan failed",
-        )
+        ) from error
