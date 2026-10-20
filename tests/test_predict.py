@@ -1,6 +1,6 @@
 import unittest
 
-from src.predict import predict_url, predict_url_details
+from src.predict import predict_url, predict_url_batch, predict_url_details
 
 
 class TestPredictUrl(unittest.TestCase):
@@ -9,66 +9,70 @@ class TestPredictUrl(unittest.TestCase):
         with self.assertRaises(ValueError):
             predict_url("")
 
-    def test_clean_trusted_domain_is_safe(self):
-        result, risk_score, reasons, score_certainty = predict_url(
-            "https://accounts.google.com"
-        )
+    def test_scheme_does_not_change_the_ml_score(self):
+        # the old model called google.com phishing only because it had no https://
+        scores = {
+            url: predict_url_details(url)["ml_risk_score"]
+            for url in ["google.com", "http://google.com", "https://www.google.com"]
+        }
 
-        self.assertEqual(result, "Safe URL")
-        self.assertLess(risk_score, 50)
-        self.assertIn("Trusted official domain detected", reasons)
-        self.assertGreaterEqual(score_certainty, 0)
-        self.assertLessEqual(score_certainty, 100)
+        self.assertEqual(len(set(scores.values())), 1, scores)
 
-    def test_http_trusted_domain_is_not_automatically_safe(self):
-        details = predict_url_details("http://accounts.google.com")
+    def test_trusted_sites_are_safe_with_or_without_scheme(self):
+        for url in [
+            "google.com",
+            "http://www.google.com",
+            "amazon.in",
+            "https://www.flipkart.com/",
+            "hdfcbank.com/personal/login",
+            "https://uidai.gov.in",
+        ]:
+            with self.subTest(url=url):
+                result, risk_score, reasons = predict_url(url)
+                self.assertEqual(result, "Safe URL")
+                self.assertLess(risk_score, 50)
 
-        self.assertNotEqual(details["risk_score"], 20)
-        self.assertIn("No HTTPS found", details["reasons"])
+    def test_phishing_patterns_are_not_safe(self):
+        for url in [
+            "https://sbi-kyc-update.com/login.php",
+            "https://secure-hdfcbank-login.in/verify",
+            "https://onlinesbi.sbi.kyc-verify.net/login",
+            "https://accounts.google.com.evil.tk/signin",
+            "http://192.168.1.10/login/verify-account",
+            "https://sbi-yono-reward.pages.dev/",
+        ]:
+            with self.subTest(url=url):
+                result, _, _ = predict_url(url)
+                self.assertNotEqual(result, "Safe URL")
 
-    def test_trusted_redirect_is_not_automatically_safe(self):
-        details = predict_url_details(
-            "https://www.google.com/url?q=https://fraud-example.xyz/login"
-        )
+    def test_trusted_redirect_is_not_trusted(self):
+        details = predict_url_details("https://www.google.com/url?q=https://fraud-example.xyz/login")
 
-        self.assertFalse(details["trusted_domain"])
+        self.assertIsNone(details["trusted_match"])
+        self.assertIn("redirect", details["rules_applied"])
 
-    def test_obvious_phishing_pattern_is_not_safe(self):
-        result, risk_score, reasons, score_certainty = predict_url(
-            "http://192.168.1.10/login/verify-account"
-        )
-
-        self.assertIn(result, {"Suspicious URL", "Phishing/Fraud URL"})
-        self.assertGreaterEqual(risk_score, 35)
-        self.assertIn("IP address used in URL", reasons)
-        self.assertGreaterEqual(score_certainty, 50)
-
-    def test_prediction_details_use_named_features(self):
+    def test_details_have_named_features_and_both_scores(self):
         details = predict_url_details("https://example.com/login")
 
         self.assertIn("URL Length", details["features"])
         self.assertEqual(details["explicit_scheme"], "https")
-        self.assertIn("score_certainty", details)
+        self.assertTrue(0 <= details["ml_risk_score"] <= 100)
+        self.assertTrue(0 <= details["lexical_risk"] <= 1)
+        self.assertTrue(details["reasons"])
 
-    def test_plain_text_is_not_accepted_as_a_url(self):
-        with self.assertRaises(ValueError):
-            predict_url("hello")
+    def test_batch_scores_match_single_predictions(self):
+        urls = ["https://example.com/about", "http://example.com/login", "bit.ly/abc"]
+        batch = predict_url_batch(urls)
 
-    def test_unsupported_scheme_is_rejected(self):
-        with self.assertRaises(ValueError):
-            predict_url("ftp://example.com/file")
+        for index, url in enumerate(urls):
+            details = predict_url_details(url)
+            self.assertEqual(round(batch.iloc[index]["final_risk"] * 100), details["risk_score"])
 
-    def test_non_web_scheme_without_slashes_is_rejected(self):
-        with self.assertRaises(ValueError):
-            predict_url("mailto:help@example.com")
-
-    def test_scheme_less_url_with_url_in_query_is_accepted(self):
-        details = predict_url_details(
-            "example.com/redirect?next=https://other.example/path"
-        )
-
-        self.assertEqual(details["root_domain"], "example.com")
-        self.assertEqual(details["explicit_scheme"], "")
+    def test_bad_inputs_are_rejected(self):
+        for url in ["hello", "ftp://example.com/file", "mailto:help@example.com"]:
+            with self.subTest(url=url):
+                with self.assertRaises(ValueError):
+                    predict_url(url)
 
 
 if __name__ == "__main__":

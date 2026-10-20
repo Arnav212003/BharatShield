@@ -28,13 +28,13 @@ jobs:
         run: python -m pip check
 
       - name: Compile Python files
-        run: python -m compileall -q api.py app.py src tests
+        run: python -m compileall -q api.py app.py src scripts tests
 
       - name: Check Python style
         run: python -m ruff check .
 
       - name: Check Python types
-        run: python -m mypy api.py src
+        run: python -m mypy .
 
       - name: Run tests
         run: python -m unittest discover -s tests

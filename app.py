@@ -56,50 +56,47 @@ def show_message_status(status):
         st.error("🚨 Likely Fraud Message")
 
 
-def show_metrics(risk_score, status, score_certainty):
+def show_metrics(risk_score, status, third_label, third_value, third_help):
     col1, col2, col3 = st.columns(3)
 
     with col1:
         st.metric(
             "Risk Score",
             f"{risk_score}%",
-            help="Project decision score; it is not a guaranteed probability.",
+            help="Final decision score after rules. It is not a guaranteed probability.",
         )
 
     with col2:
         st.metric("Status", status)
 
     with col3:
-        st.metric(
-            "Score Certainty",
-            f"{score_certainty}%",
-            help=(
-                "Heuristic based on distance from the decision cutoffs and, "
-                "for URLs, agreement between the two models."
-            ),
-        )
+        st.metric(third_label, third_value, help=third_help)
+
+
+def yes_no(value):
+    return "Yes" if value else "No"
 
 
 def build_url_analysis(prediction):
     features = prediction["features"]
-    explicit_scheme = prediction["explicit_scheme"]
+    scheme = prediction["explicit_scheme"]
 
     return {
-        "Root Domain": prediction["root_domain"],
-        "Full Domain": prediction["full_domain"],
+        "Hostname": prediction["hostname"],
+        "Registered Domain": prediction["root_domain"],
+        "Scheme": scheme.upper() if scheme else "Not given",
+        "Trusted List": prediction["trusted_match"] or "No",
+        "Impersonated Brand": prediction["impersonated_brand"] or "None found",
+        "Free Hosting Platform": prediction["free_hosting"] or "No",
         "URL Length": features["URL Length"],
-        "Domain Length": features["Domain Length"],
-        "Explicit Scheme": explicit_scheme.upper() if explicit_scheme else "Not provided",
-        "Explicit HTTPS": "Yes" if features["HTTPS"] == 1 else "No",
-        "Suspicious Keyword": "Yes" if features["Suspicious Keyword"] == 1 else "No",
-        "IP Address Used": "Yes" if features["IP Address"] == 1 else "No",
-        "Short URL": "Yes" if features["Short URL"] == 1 else "No",
-        "Suspicious TLD": "Yes" if features["Suspicious TLD"] == 1 else "No",
-        "Query Parameters": "Yes" if features["Has Query"] == 1 else "No",
         "Subdomain Count": features["Subdomain Count"],
-        "Hyphen In Domain": "Yes" if features["Hyphen In Domain"] == 1 else "No",
-        "Digit In Domain": "Yes" if features["Digit In Domain"] == 1 else "No",
-        "Static Trusted List Match": "Yes" if prediction["trusted_domain"] else "No",
+        "Path Depth": features["Path Depth"],
+        "Query Parameters": features["Query Parameters"],
+        "Phishing Keywords": features["Keyword Count"],
+        "IP Address Used": yes_no(features["IP Address"]),
+        "Suspicious TLD": yes_no(features["Suspicious TLD"]),
+        "Gradient Boosting Score": f"{prediction['lexical_risk'] * 100:.1f}%",
+        "Logistic Regression Score": f"{prediction['hybrid_risk'] * 100:.1f}%",
     }
 
 
@@ -116,13 +113,13 @@ st.markdown(
 )
 
 st.markdown(
-    '<div class="subtitle">Fraud Risk Screening Project</div>',
+    '<div class="subtitle">Phishing and Scam Screening for Indian Users</div>',
     unsafe_allow_html=True,
 )
 
 st.markdown(
     '<div class="tagline">'
-    'Phishing URL Detection • Rule-Based Message Screening • Readable Risk Reasons'
+    'URL Machine Learning • Brand Impersonation Checks • Scam Message Rules'
     '</div>',
     unsafe_allow_html=True,
 )
@@ -161,29 +158,39 @@ with url_tab:
 
                 result = prediction["result"]
                 risk_score = prediction["risk_score"]
-                reasons = prediction["reasons"]
-                score_certainty = prediction["score_certainty"]
 
                 st.markdown("### Scan Result")
 
                 show_metrics(
                     risk_score,
                     result,
-                    score_certainty,
+                    "ML Score",
+                    f"{prediction['ml_risk_score']}%",
+                    "Score from the two URL models before the fixed rules are applied.",
                 )
 
                 st.progress(risk_score / 100)
 
                 show_url_status(result)
 
+                if prediction["impersonated_brand"]:
+                    st.error(
+                        f"This link uses the name '{prediction['impersonated_brand']}' "
+                        "but is not that company's official website."
+                    )
+
+                st.markdown("### Why")
+
+                for reason in prediction["reasons"]:
+                    st.write("•", reason)
+
                 st.markdown("### URL Analysis")
 
-                analysis = build_url_analysis(prediction)
-
                 analysis_df = pd.DataFrame(
-                    analysis.items(),
+                    build_url_analysis(prediction).items(),
                     columns=["Analysis Point", "Value"],
                 )
+                analysis_df["Value"] = analysis_df["Value"].astype(str)
 
                 st.dataframe(
                     analysis_df,
@@ -191,16 +198,11 @@ with url_tab:
                     hide_index=True,
                 )
 
-                st.markdown("### Detection Reasons")
-
-                for reason in reasons:
-                    st.write("•", reason)
-
                 st.session_state.url_history.append({
                     "Time": datetime.now().strftime("%H:%M:%S"),
                     "URL": url,
                     "Risk Score": risk_score,
-                    "Score Certainty": score_certainty,
+                    "ML Score": prediction["ml_risk_score"],
                     "Result": result,
                 })
 
@@ -262,8 +264,8 @@ with message_tab:
         height=160,
         max_chars=MAX_MESSAGE_LENGTH,
         placeholder=(
-            "Example: Your SBI KYC has expired. "
-            "Verify immediately at sbi-update.xyz and enter your OTP."
+            "Example: Aapka bijli connection aaj raat kat jayega. "
+            "Turant 98XXXXXXXX par call karein."
         ),
     )
 
@@ -287,21 +289,27 @@ with message_tab:
 
                 risk_score = result["risk_score"]
                 status = result["status"]
-                score_certainty = result["score_certainty"]
+                scam_signals = [
+                    signal
+                    for signal in result["signals"]
+                    if signal != "contains_link"
+                ]
 
                 st.markdown("### Scan Result")
 
                 show_metrics(
                     risk_score,
                     status,
-                    score_certainty,
+                    "Scam Signals",
+                    str(len(scam_signals)),
+                    "Number of different scam patterns found in the message.",
                 )
 
                 st.progress(risk_score / 100)
 
                 show_message_status(status)
 
-                st.markdown("### Detection Reasons")
+                st.markdown("### Why")
 
                 for reason in result["reasons"]:
                     st.write("•", reason)
@@ -310,61 +318,30 @@ with message_tab:
 
                 if requested_items:
                     st.markdown("### Sensitive Information Requested")
-
-                    st.write(
-                        ", ".join(requested_items)
-                    )
-
-                urls = result["urls"]
-
-                if urls:
-                    st.markdown("### Links Found")
-
-                    for url_found in urls:
-                        st.code(url_found)
+                    st.write(", ".join(requested_items))
 
                 url_results = result["url_results"]
 
                 if url_results:
-                    st.markdown("### Embedded Link Analysis")
+                    st.markdown("### Links Found")
 
                     for item in url_results:
-                        url_value = item.get("url", "Unknown URL")
-
-                        with st.expander(url_value):
+                        with st.expander(item.get("url", "Unknown URL")):
                             if "error" in item:
-                                st.warning(
-                                    "This link could not be scanned."
-                                )
+                                st.warning("This link could not be scanned.")
                             else:
-                                st.write(
-                                    "Risk Score:",
-                                    f'{item["risk_score"]}%'
-                                )
+                                st.write("Result:", item["result"])
+                                st.write("Risk Score:", f'{item["risk_score"]}%')
 
-                                st.write(
-                                    "Result:",
-                                    item["result"]
-                                )
-
-                                if item.get("score_certainty") is not None:
-                                    st.write(
-                                        "Score Certainty:",
-                                        f'{item["score_certainty"]}%'
-                                    )
-
-                                if item.get("reasons"):
-                                    st.write("Reasons:")
-
-                                    for reason in item["reasons"]:
-                                        st.write("•", reason)
+                                for reason in item.get("reasons") or []:
+                                    st.write("•", reason)
 
                 st.session_state.message_history.append({
                     "Time": datetime.now().strftime("%H:%M:%S"),
                     "Risk Score": risk_score,
-                    "Score Certainty": score_certainty,
                     "Status": status,
-                    "Links Found": len(urls),
+                    "Scam Signals": len(scam_signals),
+                    "Links Found": len(result["urls"]),
                 })
 
             except ValueError as error:
@@ -378,12 +355,8 @@ with message_tab:
     if st.session_state.message_history:
         st.markdown("### Recent Message Scans")
 
-        message_history_df = pd.DataFrame(
-            st.session_state.message_history
-        )
-
         st.dataframe(
-            message_history_df,
+            pd.DataFrame(st.session_state.message_history),
             width="stretch",
             hide_index=True,
         )
@@ -400,115 +373,60 @@ st.markdown("---")
 
 
 with st.expander("📊 Model Analytics"):
-    report_path = os.path.join(
-        MODEL_DIR,
-        "model_evaluation_report.csv",
-    )
+    report_path = os.path.join(MODEL_DIR, "model_evaluation_report.csv")
 
-    lexical_cm = os.path.join(
-        MODEL_DIR,
-        "confusion_matrix_lexical.png",
-    )
+    images = [
+        ("Final System on the External Test", "confusion_matrix_external.png"),
+        ("Final System on the Internal Test", "confusion_matrix_internal.png"),
+        ("Feature Importance", "feature_importance.png"),
+        ("Reliability Curve", "reliability_curve.png"),
+    ]
 
-    hybrid_cm = os.path.join(
-        MODEL_DIR,
-        "confusion_matrix_hybrid.png",
-    )
-
-    final_cm = os.path.join(
-        MODEL_DIR,
-        "confusion_matrix_final.png",
-    )
-
-    feature_importance = os.path.join(
-        MODEL_DIR,
-        "feature_importance.png",
-    )
-
-    reliability_curve = os.path.join(
-        MODEL_DIR,
-        "reliability_curve.png",
-    )
+    found_any = False
 
     if os.path.exists(report_path):
+        found_any = True
         st.markdown("### Evaluation Report")
-
-        report = pd.read_csv(report_path)
-
+        st.caption(
+            "External = phishing first seen after the training cutoff date, "
+            "from websites the model never saw in training."
+        )
         st.dataframe(
-            report,
+            pd.read_csv(report_path),
             width="stretch",
             hide_index=True,
         )
 
-    if os.path.exists(lexical_cm):
-        st.markdown("### Lexical Model")
+    for title, file_name in images:
+        path = os.path.join(MODEL_DIR, file_name)
 
-        st.image(
-            lexical_cm,
-            width="stretch",
-        )
+        if os.path.exists(path):
+            found_any = True
+            st.markdown(f"### {title}")
+            st.image(path, width="stretch")
 
-    if os.path.exists(hybrid_cm):
-        st.markdown("### Hybrid Model")
-
-        st.image(
-            hybrid_cm,
-            width="stretch",
-        )
-
-    if os.path.exists(final_cm):
-        st.markdown("### Final Decision System")
-
-        st.image(
-            final_cm,
-            width="stretch",
-        )
-
-    if os.path.exists(feature_importance):
-        st.markdown("### Feature Importance")
-
-        st.image(
-            feature_importance,
-            width="stretch",
-        )
-
-    if os.path.exists(reliability_curve):
-        st.markdown("### Reliability Curve")
-
-        st.image(
-            reliability_curve,
-            width="stretch",
-        )
-
-    if not any(
-        os.path.exists(path)
-        for path in [
-            report_path,
-            lexical_cm,
-            hybrid_cm,
-            final_cm,
-            feature_importance,
-            reliability_curve,
-        ]
-    ):
-        st.info(
-            "Model analytics are not available yet."
-        )
+    if not found_any:
+        st.info("Model analytics are not available yet.")
 
 
 with st.expander("ℹ️ About BharatShield"):
     st.write(
-        "BharatShield detects phishing URLs and scam messages "
-        "using URL machine learning, character-pattern analysis, a static "
-        "trusted-domain list, and readable security rules."
+        "The URL scanner uses two machine learning models (gradient boosted "
+        "trees on URL structure and a logistic regression on character patterns), "
+        "then a few fixed rules for brand impersonation, IP addresses, "
+        "redirects, short links, and free hosting platforms."
     )
 
     st.write(
-        "The URL engine combines lexical URL features with "
-        "TF-IDF character patterns. The message scanner checks "
-        "for OTP, PIN, password, payment, urgency, KYC, and "
-        "social-engineering signals."
+        "The message scanner uses readable rules for OTP and PIN requests, "
+        "KYC and account threats, fake electricity disconnection, lottery, "
+        "parcel, 'digital arrest', job, investment, and loan scams. Links in "
+        "the message are checked with the URL scanner."
+    )
+
+    st.write(
+        "This is a student project and a second opinion, not a guarantee. "
+        "When in doubt, open the official app or call the official number."
     )
 
 

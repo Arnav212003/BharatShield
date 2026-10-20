@@ -1,5 +1,7 @@
-Model,Threshold,Accuracy,Domain-Macro Accuracy,Precision,Recall,FPR,F1 Score,ROC-AUC,PR-AUC,Brier,Est. Precision at 1% Prevalence,TN,FP,FN,TP
-Lexical Random Forest Model,0.5,90.25,85.41,76.36,75.92,6.06,76.14,93.4,85.48,0.0888,11.24,15336,989,1013,3194
-Hybrid NLP + Lexical Logistic Regression Model,0.5,91.47,87.96,75.0,87.57,7.52,80.8,97.03,92.21,0.0625,10.52,15097,1228,523,3684
-ML only (lexical + hybrid blend),0.5,95.2,92.97,86.75,90.4,3.56,88.53,98.13,95.06,0.0593,20.42,15744,581,404,3803
-Final System (validated policy),0.5,95.2,92.97,86.75,90.4,3.56,88.53,98.13,95.06,0.0593,20.42,15744,581,404,3803
+Dataset,Model,Rows,Threshold,Accuracy,Precision,Recall,F1 Score,FPR,ROC-AUC,PR-AUC,TN,FP,FN,TP
+internal,Gradient boosting (URL features),83974,0.5,91.65,83.47,84.92,84.19,5.96,96.0,92.8,58299,3697,3314,18664
+internal,Logistic regression (features + TF-IDF),83974,0.5,95.62,91.82,91.43,91.62,2.89,98.87,97.49,60206,1790,1884,20094
+internal,ML blend,83974,0.5,96.43,93.3,93.05,93.17,2.37,98.98,97.78,60528,1468,1528,20450
+internal,Final system (ML + rules),83974,0.5,96.41,93.21,93.08,93.14,2.4,98.82,96.99,60505,1491,1521,20457
+external,ML blend,35988,0.5,95.21,89.83,91.93,90.87,3.64,98.5,97.09,25687,971,753,8577
+external,Final system (ML + rules),35988,0.5,95.17,89.67,91.95,90.8,3.71,97.96,94.6,25670,988,751,8579

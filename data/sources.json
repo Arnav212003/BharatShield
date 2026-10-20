@@ -1,0 +1,55 @@
+{
+  "common_crawl": {
+    "file": "cc-cluster.idx",
+    "label": "legitimate (presumed)",
+    "terms": "https://commoncrawl.org/terms-of-use",
+    "note": "Index of every ~3000th URL in the crawl. Used as normal web pages.",
+    "source_url": "https://data.commoncrawl.org/cc-index/collections/CC-MAIN-2026-39/indexes/cluster.idx",
+    "crawl": "CC-MAIN-2026-39",
+    "retrieved_at_utc": "2026-10-20T18:20:21+00:00",
+    "sha256": "8c64198308c824807805fd2cf09bf3d603531044c230e32a335afa4fda94ea41",
+    "bytes": 104741069
+  },
+  "majestic_million": {
+    "file": "majestic_million.csv",
+    "label": "legitimate (presumed)",
+    "terms": "CC BY 3.0, https://majestic.com/reports/majestic-million",
+    "note": "Top 1M domains by backlinks. Used as normal homepages.",
+    "source_url": "https://downloads.majestic.com/majestic_million.csv",
+    "retrieved_at_utc": "2026-10-20T18:21:02+00:00",
+    "sha256": "0bbbaf1cdce3e97ce947b9411220d486d1e4d7e62454ae62086df8ed8ee8c604",
+    "bytes": 79195412
+  },
+  "tranco": {
+    "file": "tranco-top-1m.csv.zip",
+    "label": "legitimate (presumed), external test only",
+    "terms": "https://tranco-list.eu/ (cite Le Pochat et al., NDSS 2019)",
+    "note": "Top 1M domains. Only used for the external test.",
+    "source_url": "https://tranco-list.eu/download/daily/top-1m.csv.zip",
+    "retrieved_at_utc": "2026-10-20T18:21:07+00:00",
+    "sha256": "ab12d7dcbc68400aca65074d647a7c87caa0f141a8e4ef11f57f3c5642f772c4",
+    "bytes": 9723373
+  },
+  "phishing_database": {
+    "file": "phishing-links-ACTIVE.txt",
+    "label": "phishing",
+    "terms": "MIT License, https://github.com/Phishing-Database/Phishing.Database",
+    "note": "Community list of active phishing links. No dates.",
+    "source_url": "https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/master/phishing-links-ACTIVE.txt",
+    "retrieved_at_utc": "2026-10-20T18:21:29+00:00",
+    "sha256": "be4a179b3ac92b7135595b459c2c9867fe681c12209489dd99517db8407a67c6",
+    "bytes": 65823890
+  },
+  "openphish": {
+    "file": "openphish_history.tsv",
+    "label": "phishing",
+    "terms": "Non-commercial use only, https://openphish.com/terms.html",
+    "note": "Built from the Git history of the free feed, so every URL has a first-seen date.",
+    "rows": 53118,
+    "source_url": "https://github.com/openphish/public_feed",
+    "since": "2026-07-01",
+    "retrieved_at_utc": "2026-10-20T18:21:41+00:00",
+    "sha256": "4df051d5358d179890ba23c5fe39a8713ffd6576e391995284239fe75b467e70",
+    "bytes": 3842688
+  }
+}

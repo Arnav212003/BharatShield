@@ -1,14 +1,6 @@
 {
-  "lexical_weight": 0.5,
-  "hybrid_weight": 0.5,
+  "lexical_weight": 0.3,
+  "hybrid_weight": 0.7,
   "safe_cutoff": 0.5,
-  "phishing_cutoff": 0.7,
-  "trusted_domain_max_risk": 0.2,
-  "risk_policy_name": "no_adjustment",
-  "risk_policy": {
-    "no_pattern_reduction": 1.0,
-    "no_pattern_ml_limit": 0.0,
-    "two_reason_bonus": 0.0,
-    "three_reason_bonus": 0.0
-  }
+  "phishing_cutoff": 0.8
 }

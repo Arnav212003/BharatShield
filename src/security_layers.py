@@ -1,400 +1,366 @@
 import json
 import os
-import warnings
-from functools import lru_cache
-from urllib.parse import parse_qs, urlparse
+import re
+from urllib.parse import parse_qsl
 
-from .features import (
-    FEATURE_NAMES,
-    add_scheme,
-    extract_domain_parts,
-    extract_features,
+from .features import SUSPICIOUS_WORDS, has_suspicious_tld
+from .url_utils import (
+    domain_parts,
     get_explicit_scheme,
+    get_hostname,
+    host_matches,
+    is_ip_address,
+    registered_domain,
+    split_url,
 )
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TRUSTED_DOMAINS_FILE = os.path.join(BASE_DIR, "config", "trusted_domains.json")
+DOMAIN_LIST_FILE = os.path.join(BASE_DIR, "config", "trusted_domains.json")
 
+# default cutoffs, training writes the validated ones to model_config.json
+SAFE_CUTOFF = 0.50
+PHISHING_CUTOFF = 0.80
+TRUSTED_MAX_RISK = 0.20
 
-SAFE_CUTOFF = 0.35
-PHISHING_CUTOFF = 0.70
-TRUSTED_DOMAIN_MAX_RISK = 0.20
-
-DEFAULT_RISK_POLICY = {
-    "no_pattern_reduction": 0.45,
-    "no_pattern_ml_limit": 0.50,
-    "two_reason_bonus": 0.15,
-    "three_reason_bonus": 0.10,
+# Fixed rule weights. They are not learned, so each one is kept small and
+# only used for signals the URL model cannot see well on its own.
+RULE_POINTS = {
+    "brand_impersonation": 0.30,
+    "ip_address": 0.25,
+    "at_symbol": 0.25,
+    "punycode": 0.15,
+    "redirect": 0.15,
 }
 
-
-# companies that own every subdomain, so the whole root domain is trusted
-DEFAULT_TRUSTED_DOMAINS = [
-    "openai.com",
-    "chatgpt.com",
-    "camsonline.com",
-    "jioblackrockamc.com",
-    "jiofinance.com",
-    "icicibank.com",
-    "hdfcbank.com",
-    "sbi.co.in",
-    "onlinesbi.sbi",
+SHORTENERS = [
+    "bit.ly",
+    "tinyurl.com",
+    "goo.gl",
+    "t.co",
+    "ow.ly",
+    "is.gd",
+    "buff.ly",
+    "cutt.ly",
+    "shorturl.at",
+    "rebrand.ly",
+    "tiny.cc",
+    "lnkd.in",
+    "rb.gy",
+    "t.ly",
+    "s.id",
 ]
 
-# big platforms where users can also host content. only the exact
-# hosts below are trusted for these, never the whole domain
-PLATFORM_DOMAINS = [
-    "google.com",
-    "github.com",
-]
-
-TRUSTED_HOSTS = [
-    "google.com",
-    "www.google.com",
-    "accounts.google.com",
-    "mail.google.com",
-    "myaccount.google.com",
-    "support.google.com",
-    "github.com",
-    "www.github.com",
-    "docs.github.com",
-]
-
-# anyone can host a page here, so never trust these
-USER_CONTENT_HOSTS = [
-    "sites.google.com",
-    "docs.google.com",
-    "drive.google.com",
-    "forms.gle",
-    "storage.googleapis.com",
-    "googleusercontent.com",
-    "githubusercontent.com",
-    "github.io",
-    "web.app",
-    "firebaseapp.com",
-    "pages.dev",
-    "netlify.app",
-    "vercel.app",
-    "herokuapp.com",
-    "onrender.com",
-    "glitch.me",
-    "blogspot.com",
-    "weebly.com",
-    "wixsite.com",
-    "notion.site",
-]
-
-REDIRECT_PATHS = ["/url", "/redirect", "/redirector", "/away", "/out"]
-
-REDIRECT_PATH_PREFIXES = ["/amp/"]
-
-REDIRECT_KEYS = [
+REDIRECT_KEYS = {
     "url",
-    "q",
     "u",
+    "q",
     "redirect",
     "redirect_url",
+    "redirect_uri",
     "continue",
     "dest",
+    "destination",
     "goto",
     "next",
-]
-
-
-def load_trusted_domains():
-    if not os.path.exists(TRUSTED_DOMAINS_FILE):
-        return DEFAULT_TRUSTED_DOMAINS.copy()
-
-    try:
-        with open(TRUSTED_DOMAINS_FILE, "r", encoding="utf-8") as file:
-            domains = json.load(file)
-
-        cleaned = []
-
-        for domain in domains:
-            if isinstance(domain, str):
-                domain = domain.lower().strip()
-
-                if domain:
-                    cleaned.append(domain)
-
-        if cleaned:
-            return cleaned
-
-    except (OSError, json.JSONDecodeError, TypeError) as error:
-        warnings.warn(
-            f"trusted_domains.json not loaded: {error}",
-            stacklevel=2,
-        )
-
-    return DEFAULT_TRUSTED_DOMAINS.copy()
-
-
-TRUSTED_DOMAINS = load_trusted_domains()
-
-
-@lru_cache(maxsize=2048)
-def split_domain(url_text):
-    extracted = extract_domain_parts(url_text)
-    return extracted.subdomain, extracted.domain, extracted.suffix
-
-
-def get_domain(url):
-    subdomain, domain, suffix = split_domain(str(url).lower().strip())
-
-    if suffix:
-        root_domain = f"{domain}.{suffix}"
-    else:
-        root_domain = domain
-
-    parts = [part for part in [subdomain, domain, suffix] if part]
-    full_domain = ".".join(parts)
-
-    return root_domain, full_domain
-
-
-def parse_with_scheme(url):
-    url = str(url).lower().strip()
-    url = add_scheme(url)
-
-    try:
-        return urlparse(url)
-    except ValueError:
-        return None
-
-
-def get_hostname(url):
-    parsed = parse_with_scheme(url)
-
-    if parsed is None:
-        return ""
-
-    try:
-        return parsed.hostname or ""
-    except ValueError:
-        return ""
-
-
-def is_user_content_host(url):
-    hostname = get_hostname(url)
-
-    for host in USER_CONTENT_HOSTS:
-        if hostname == host or hostname.endswith("." + host):
-            return True
-
-    return False
-
-
-def is_redirect_link(url):
-    # true when the link sends the user to some other website
-    parsed = parse_with_scheme(url)
-
-    if parsed is None:
-        return False
-
-    path = parsed.path.rstrip("/")
-
-    if path in REDIRECT_PATHS or any(
-        parsed.path.startswith(prefix) for prefix in REDIRECT_PATH_PREFIXES
-    ):
-        # on a redirect style path, any domain-like value is suspicious
-        for key in REDIRECT_KEYS:
-            for value in parse_qs(parsed.query).get(key, []):
-                if value.startswith("http") or "." in value:
-                    return True
-
-        if parsed.path.startswith("/amp/"):
-            return True
-
-    own_root = get_domain(url)[0]
-
-    # on any path, a full link to a different site in the query is a redirect
-    for values in parse_qs(parsed.query).values():
-        for value in values:
-            value = value.lower().strip()
-
-            if value.startswith(("http://", "https://", "//")):
-                if get_domain(value)[0] != own_root:
-                    return True
-
-    return False
-
-
-def is_trusted_domain(url):
-    if is_user_content_host(url):
-        return False
-
-    if is_redirect_link(url):
-        return False
-
-    root_domain, full_domain = get_domain(url)
-
-    if root_domain in PLATFORM_DOMAINS:
-        return get_hostname(url) in TRUSTED_HOSTS
-
-    return root_domain in TRUSTED_DOMAINS or full_domain in TRUSTED_DOMAINS
-
-
-REASON_TEXT = {
-    "no_https": "No HTTPS found",
-    "keyword": "Suspicious keyword found",
-    "ip_address": "IP address used in URL",
-    "short_url": "Shortened URL detected",
-    "suspicious_tld": "Suspicious domain extension found",
-    "long_url": "URL is too long",
-    "many_slashes": "Too many slashes",
-    "many_digits": "Many digits found in URL",
-    "at_symbol": "@ symbol found in URL",
-    "query": "URL contains query parameters",
-    "many_subdomains": "Too many subdomains",
-    "hyphen_domain": "Hyphen found in domain name",
-    "digit_domain": "Digit found in domain name",
-    "trusted_domain": "Trusted official domain detected",
-    "no_pattern": "No major suspicious pattern found",
+    "target",
+    "link",
 }
 
-STRONG_REASON_CODES = [
-    "no_https",
-    "keyword",
-    "suspicious_tld",
-    "ip_address",
-    "short_url",
-    "at_symbol",
-]
-
-STRONG_REASONS = [REASON_TEXT[code] for code in STRONG_REASON_CODES]
+# digits that phishers use in place of letters, g00gle -> google
+LOOKALIKE_DIGITS = str.maketrans({"0": "o", "1": "l", "3": "e", "4": "a", "5": "s"})
 
 
-def get_reason_codes(url, features):
-    f = dict(zip(FEATURE_NAMES, features, strict=True))
-    trusted = is_trusted_domain(url)
-    explicit_scheme = get_explicit_scheme(url)
+def load_domain_lists(path=DOMAIN_LIST_FILE):
+    with open(path, "r", encoding="utf-8") as file:
+        saved = json.load(file)
 
-    codes = []
+    def clean(values):
+        return sorted({str(value).lower().strip(".") for value in values})
 
-    if explicit_scheme and explicit_scheme != "https":
-        codes.append("no_https")
-
-    if f["Suspicious Keyword"] == 1 and not trusted:
-        codes.append("keyword")
-
-    if f["IP Address"] == 1:
-        codes.append("ip_address")
-
-    if f["Short URL"] == 1:
-        codes.append("short_url")
-
-    if f["Suspicious TLD"] == 1:
-        codes.append("suspicious_tld")
-
-    if f["URL Length"] > 75 and not trusted:
-        codes.append("long_url")
-
-    if f["Slashes"] > 6 and not trusted:
-        codes.append("many_slashes")
-
-    if f["Digits"] >= 15 and not trusted:
-        codes.append("many_digits")
-
-    if f["Has @ Symbol"] == 1:
-        codes.append("at_symbol")
-
-    if f["Has Query"] == 1 and not trusted:
-        codes.append("query")
-
-    if f["Subdomain Count"] >= 3 and not trusted:
-        codes.append("many_subdomains")
-
-    if f["Hyphen In Domain"] == 1 and not trusted:
-        codes.append("hyphen_domain")
-
-    if f["Digit In Domain"] == 1 and not trusted:
-        codes.append("digit_domain")
-
-    if trusted:
-        codes.append("trusted_domain")
-
-    if not codes:
-        codes.append("no_pattern")
-
-    return codes
+    return {
+        "trusted_roots": clean(saved.get("trusted_roots", [])),
+        "trusted_suffixes": clean(saved.get("trusted_suffixes", [])),
+        "user_content_roots": clean(saved.get("user_content_roots", [])),
+        "brands": {
+            brand.lower(): clean(roots)
+            for brand, roots in saved.get("brands", {}).items()
+        },
+    }
 
 
-def get_reasons_from_features(url, features):
-    codes = get_reason_codes(url, features)
-    return [REASON_TEXT[code] for code in codes]
+DOMAIN_LISTS = load_domain_lists()
+TRUSTED_ROOTS = DOMAIN_LISTS["trusted_roots"]
+TRUSTED_SUFFIXES = DOMAIN_LISTS["trusted_suffixes"]
+USER_CONTENT_ROOTS = DOMAIN_LISTS["user_content_roots"]
+BRANDS = DOMAIN_LISTS["brands"]
 
 
-def get_reasons(url):
-    features = extract_features(url)
-    return get_reasons_from_features(url, features)
+def get_user_content_root(hostname):
+    # tenant.github.io and also sites.google.com/view/anything
+    for root in USER_CONTENT_ROOTS:
+        if host_matches(hostname, root):
+            return root
+
+    return None
 
 
-def apply_risk_rules(
-    raw_ml_risk,
-    features,
-    reasons,
-    trusted,
-    policy=None,
-    trusted_domain_max_risk=TRUSTED_DOMAIN_MAX_RISK,
-):
-    if policy is None:
-        policy = DEFAULT_RISK_POLICY
+def is_shortener(hostname):
+    return registered_domain(hostname) in SHORTENERS
 
-    risk = float(raw_ml_risk)
-    f = dict(zip(FEATURE_NAMES, features, strict=True))
 
-    strong_reason_count = 0
+def has_userinfo(url):
+    # http://paypal.com@evil.com opens evil.com, the part before @ is a trick
+    parts = split_url(url)
+    return bool(parts and "@" in parts.netloc)
 
-    for reason in STRONG_REASONS:
-        if reason in reasons:
-            strong_reason_count += 1
 
-    if trusted:
-        clean_trusted_url = (
-            REASON_TEXT["no_https"] not in reasons
-            and f["Has @ Symbol"] == 0
-            and f["IP Address"] == 0
-            and f["Short URL"] == 0
-        )
+def get_redirect_target(url):
+    """Return the other website a link sends you to, if any."""
+    parts = split_url(url)
 
-        if clean_trusted_url:
-            risk = min(risk, trusted_domain_max_risk)
+    if parts is None:
+        return None
 
-    # reduce only if model is also not sure
+    own_root = registered_domain(get_hostname(url))
+
+    for key, value in parse_qsl(parts.query, keep_blank_values=True):
+        value = value.strip().lower()
+        looks_like_link = value.startswith(("http://", "https://", "//"))
+
+        if not looks_like_link and key.lower() in REDIRECT_KEYS:
+            # bare "evil.com/login" style values on a redirect key
+            looks_like_link = bool(re.match(r"^[a-z0-9-]+(\.[a-z0-9-]+)+(/|$)", value))
+
+        if not looks_like_link:
+            continue
+
+        target_host = get_hostname(value)
+
+        if target_host and registered_domain(target_host) != own_root:
+            return target_host
+
+    return None
+
+
+def get_trusted_match(url):
+    """Which trusted list the URL matches, or None.
+
+    Links on free hosting, redirects, IP hosts and @ tricks never count
+    as trusted, even when they start with a trusted name.
+    """
+    hostname = get_hostname(url)
+
     if (
-        reasons == [REASON_TEXT["no_pattern"]]
-        and risk < policy["no_pattern_ml_limit"]
+        not hostname
+        or is_ip_address(hostname)
+        or has_userinfo(url)
+        or get_user_content_root(hostname)
+        or get_redirect_target(url)
     ):
-        risk *= policy["no_pattern_reduction"]
+        return None
 
-    if not trusted:
-        if strong_reason_count >= 2:
-            risk += policy["two_reason_bonus"]
+    if registered_domain(hostname) in TRUSTED_ROOTS:
+        return "trusted_root"
 
-        if strong_reason_count >= 3:
-            risk += policy["three_reason_bonus"]
+    for suffix in TRUSTED_SUFFIXES:
+        if host_matches(hostname, suffix):
+            return "trusted_suffix"
 
-    return max(0.0, min(risk, 1.0))
+    return None
 
 
-def risk_score_to_result(
-    risk_score,
+def brand_in_label(label, brand):
+    # short names like sbi or pnb must be a whole word, longer ones can
+    # start a word too (hdfcbank-kyc, paytmreward)
+    for token in re.split(r"[-_]", label):
+        if token == brand or (len(brand) >= 4 and token.startswith(brand)):
+            return True
+
+    return False
+
+
+def find_impersonated_brand(url):
+    hostname = get_hostname(url)
+
+    if not hostname or get_trusted_match(url):
+        return None
+
+    root = registered_domain(hostname)
+    parts = domain_parts(hostname)
+    user_root = get_user_content_root(hostname)
+
+    if user_root:
+        # only look at the tenant part, not at "github" in github.io
+        labels = hostname[: -len(user_root) - 1].split(".")
+    elif parts.suffix:
+        labels = hostname[: -len(parts.suffix) - 1].split(".")
+    else:
+        labels = hostname.split(".")
+
+    for brand, official_roots in BRANDS.items():
+        # amazon.ae or applecash.apple belong to the brand itself
+        if root in official_roots or (not user_root and brand in (parts.domain, parts.suffix)):
+            continue
+
+        for label in labels:
+            if brand_in_label(label, brand):
+                return brand
+
+            lookalike = label.translate(LOOKALIKE_DIGITS)
+
+            if len(brand) >= 5 and lookalike != label and brand_in_label(lookalike, brand):
+                return brand
+
+    return None
+
+
+def found_keywords(url):
+    text = url.lower()
+    words = set(re.split(r"[^a-z0-9]+", text))
+
+    return [
+        word
+        for word in SUSPICIOUS_WORDS
+        if (word in words if len(word) <= 3 else word in text)
+    ]
+
+
+def check_url(url):
+    """Collect rule results and readable notes for one URL."""
+    hostname = get_hostname(url)
+    trusted = get_trusted_match(url)
+    user_root = get_user_content_root(hostname)
+
+    return {
+        "hostname": hostname,
+        "trusted_match": trusted,
+        "user_content_root": user_root,
+        "brand": find_impersonated_brand(url),
+        "ip_address": is_ip_address(hostname),
+        "at_symbol": has_userinfo(url),
+        "punycode": "xn--" in hostname,
+        "redirect_target": get_redirect_target(url),
+        "shortener": is_shortener(hostname),
+        "explicit_scheme": get_explicit_scheme(url),
+        "keywords": found_keywords(url),
+        "suspicious_tld": has_suspicious_tld(domain_parts(hostname).suffix),
+        "subdomain_count": len([p for p in domain_parts(hostname).subdomain.split(".") if p]),
+        "url_length": len(url),
+    }
+
+
+def apply_rules(
+    ml_risk,
+    checks,
     safe_cutoff=SAFE_CUTOFF,
     phishing_cutoff=PHISHING_CUTOFF,
 ):
-    if risk_score >= phishing_cutoff * 100:
+    """Combine the model score with the fixed URL rules.
+
+    Returns the final risk (0 to 1) and the list of rules that changed it.
+    """
+    risk = float(ml_risk)
+    applied = []
+
+    rule_hits = {
+        "brand_impersonation": bool(checks["brand"]),
+        "ip_address": checks["ip_address"],
+        "at_symbol": checks["at_symbol"],
+        "punycode": checks["punycode"],
+        "redirect": bool(checks["redirect_target"]),
+    }
+
+    for rule, hit in rule_hits.items():
+        if hit:
+            risk += RULE_POINTS[rule]
+            applied.append(rule)
+
+    risk = min(risk, 1.0)
+
+    if checks["brand"] and risk < safe_cutoff:
+        # a bank or brand name on someone else's domain is never "Safe"
+        risk = safe_cutoff
+
+    if checks["shortener"] and risk < safe_cutoff:
+        # we cannot see where a short link goes, so never call it safe
+        risk = safe_cutoff
+        applied.append("shortener")
+
+    if checks["user_content_root"] and not checks["brand"] and risk >= phishing_cutoff:
+        # free hosting has very few legitimate examples in the training data,
+        # so the model alone is not enough to call it phishing
+        risk = phishing_cutoff - 0.01
+        applied.append("free_hosting_cap")
+
+    if checks["trusted_match"] and risk > TRUSTED_MAX_RISK:
+        risk = TRUSTED_MAX_RISK
+        applied.append("trusted")
+
+    return max(0.0, risk), applied
+
+
+def build_reasons(ml_risk, checks, safe_cutoff=SAFE_CUTOFF):
+    reasons = []
+
+    if checks["trusted_match"] == "trusted_root":
+        reasons.append("Domain is on the trusted list")
+    elif checks["trusted_match"] == "trusted_suffix":
+        reasons.append("Government or bank-only domain (.gov.in, .nic.in, .bank.in)")
+
+    if checks["brand"]:
+        reasons.append(
+            f"Uses the name '{checks['brand']}' but is not its official website"
+        )
+
+    if checks["ip_address"]:
+        reasons.append("IP address used instead of a domain name")
+
+    if checks["at_symbol"]:
+        reasons.append("@ symbol hides the real website address")
+
+    if checks["punycode"]:
+        reasons.append("Domain uses special (punycode) characters that can look like other letters")
+
+    if checks["redirect_target"]:
+        reasons.append(f"Link redirects to another website: {checks['redirect_target']}")
+
+    if checks["shortener"]:
+        reasons.append("Shortened link hides the real destination")
+
+    if checks["user_content_root"]:
+        reasons.append(
+            f"Hosted on a free website platform ({checks['user_content_root']}), "
+            "anyone can create a page here"
+        )
+
+    if ml_risk >= safe_cutoff:
+        reasons.append("URL model: pattern is similar to known phishing links")
+    else:
+        reasons.append("URL model: pattern is similar to normal websites")
+
+    if checks["keywords"]:
+        reasons.append("Words often used in phishing: " + ", ".join(checks["keywords"][:5]))
+
+    if checks["suspicious_tld"]:
+        reasons.append("Domain ending is common in phishing feeds")
+
+    if checks["subdomain_count"] >= 3:
+        reasons.append("Many subdomains in the address")
+
+    if checks["url_length"] > 100:
+        reasons.append("Very long URL")
+
+    if checks["explicit_scheme"] == "http":
+        reasons.append("Not using HTTPS (connection is not encrypted)")
+
+    return reasons
+
+
+def risk_to_result(risk, safe_cutoff=SAFE_CUTOFF, phishing_cutoff=PHISHING_CUTOFF):
+    if risk >= phishing_cutoff:
         return "Phishing/Fraud URL"
 
-    if risk_score >= safe_cutoff * 100:
+    if risk >= safe_cutoff:
         return "Suspicious URL"
 
     return "Safe URL"
-
-
-def binary_label_from_risk_score(risk, safe_cutoff=SAFE_CUTOFF):
-    # suspicious is also counted as unsafe
-    if risk >= safe_cutoff:
-        return 1
-
-    return 0

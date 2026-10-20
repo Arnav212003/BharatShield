@@ -1,115 +1,141 @@
 import unittest
 
-from src.features import extract_features
 from src.security_layers import (
-    FEATURE_NAMES,
-    apply_risk_rules,
-    get_reasons_from_features,
-    is_redirect_link,
-    is_trusted_domain,
-    risk_score_to_result,
+    PHISHING_CUTOFF,
+    SAFE_CUTOFF,
+    TRUSTED_MAX_RISK,
+    apply_rules,
+    build_reasons,
+    check_url,
+    find_impersonated_brand,
+    get_redirect_target,
+    get_trusted_match,
+    risk_to_result,
 )
 
 
-def feature_map(url):
-    return dict(zip(FEATURE_NAMES, extract_features(url), strict=True))
+class TestTrustedList(unittest.TestCase):
+
+    def test_trusted_roots_and_subdomains(self):
+        for url in ["https://www.hdfcbank.com/login", "amazon.in", "http://netbanking.hdfcbank.com"]:
+            with self.subTest(url=url):
+                self.assertEqual(get_trusted_match(url), "trusted_root")
+
+    def test_government_and_bank_suffixes(self):
+        for url in ["https://uidai.gov.in", "incometax.gov.in/iec/foportal", "https://sbi.bank.in"]:
+            with self.subTest(url=url):
+                self.assertEqual(get_trusted_match(url), "trusted_suffix")
+
+    def test_lookalikes_are_not_trusted(self):
+        for url in [
+            "https://hdfcbank.com.evil.tk",
+            "https://hdfcbank-login.com",
+            "https://sites.google.com/view/sbi-kyc",
+            "https://www.google.com/url?q=https://evil.xyz/login",
+            "http://amazon.in@evil.com",
+            "https://fakegov.in",
+        ]:
+            with self.subTest(url=url):
+                self.assertIsNone(get_trusted_match(url))
 
 
-class TestSecurityLayers(unittest.TestCase):
+class TestBrandImpersonation(unittest.TestCase):
 
-    def test_explicit_https_sets_https_feature(self):
-        features = feature_map("https://example.com/login")
+    def test_brand_on_other_domain_is_found(self):
+        cases = {
+            "https://sbi-kyc-update.com/login": "sbi",
+            "https://onlinesbi.sbi.kyc-verify.net": "onlinesbi",
+            "https://hdfcbank-netbanking.in": "hdfc",
+            "https://accounts.google.com.evil.tk/signin": "google",
+            "https://paypa1.com/signin": "paypal",
+            "https://g00gle-security.com": "google",
+            "https://paytm-reward.pages.dev": "paytm",
+        }
 
-        self.assertEqual(features["HTTPS"], 1)
-        self.assertEqual(features["Suspicious Keyword"], 1)
+        for url, brand in cases.items():
+            with self.subTest(url=url):
+                self.assertEqual(find_impersonated_brand(url), brand)
 
-    def test_explicit_http_clears_https_feature(self):
-        url = "http://example.com/login"
-        features = feature_map(url)
-        reasons = get_reasons_from_features(url, list(features.values()))
+    def test_official_and_unrelated_sites_are_not_flagged(self):
+        for url in [
+            "https://www.onlinesbi.sbi",
+            "https://www.sbicard.com",
+            "https://www.hdfcergo.com",
+            "https://www.icicidirect.com",
+            "https://www.pineapple-recipes.com",
+            "https://github.io",
+            "https://my-portfolio.github.io",
+            "https://www.outlookindia.com",
+        ]:
+            with self.subTest(url=url):
+                self.assertIsNone(find_impersonated_brand(url))
 
-        self.assertEqual(features["HTTPS"], 0)
-        self.assertIn("No HTTPS found", reasons)
 
-    def test_url_without_scheme_is_not_assumed_https(self):
-        url = "example.com/login"
-        features = feature_map("example.com/login")
-        reasons = get_reasons_from_features(url, list(features.values()))
+class TestRedirect(unittest.TestCase):
 
-        self.assertEqual(features["HTTPS"], 0)
-        self.assertEqual(features["Suspicious Keyword"], 1)
-        self.assertNotIn("No HTTPS found", reasons)
-
-    def test_ip_address_url_is_flagged(self):
-        features = feature_map("http://192.168.1.10/login")
-
-        self.assertEqual(features["HTTPS"], 0)
-        self.assertEqual(features["IP Address"], 1)
-
-    def test_google_redirect_link_is_not_trusted(self):
-        url = "https://www.google.com/url?q=https://fraud-example.xyz/login"
-
-        self.assertTrue(is_redirect_link(url))
-        self.assertFalse(is_trusted_domain(url))
-
-    def test_user_content_host_is_not_trusted(self):
-        self.assertFalse(
-            is_trusted_domain("https://docs.google.com/forms/d/e/fake-form")
+    def test_redirect_to_other_site(self):
+        self.assertEqual(
+            get_redirect_target("https://www.google.com/url?q=https://evil.xyz/login"),
+            "evil.xyz",
         )
+        self.assertEqual(get_redirect_target("example.com/go?next=evil.xyz/login"), "evil.xyz")
 
-    def test_clean_official_domain_is_trusted(self):
-        self.assertTrue(is_trusted_domain("https://accounts.google.com"))
+    def test_same_site_or_normal_query_is_not_a_redirect(self):
+        self.assertIsNone(get_redirect_target("https://example.com/a?next=https://example.com/b"))
+        self.assertIsNone(get_redirect_target("https://example.com/search?q=cricket"))
 
-    def test_clean_trusted_domain_is_capped_below_alert_threshold(self):
-        url = "https://accounts.google.com"
-        features = extract_features(url)
-        reasons = get_reasons_from_features(url, features)
 
-        adjusted = apply_risk_rules(
-            raw_ml_risk=0.82,
-            features=features,
-            reasons=reasons,
-            trusted=True,
+class TestApplyRules(unittest.TestCase):
+
+    def test_trusted_site_is_capped(self):
+        risk, applied = apply_rules(0.9, check_url("https://www.amazon.in/dp/B0CX59"))
+
+        self.assertEqual(risk, TRUSTED_MAX_RISK)
+        self.assertIn("trusted", applied)
+
+    def test_brand_impersonation_adds_risk(self):
+        risk, applied = apply_rules(0.4, check_url("https://sbi-kyc-update.com"))
+
+        self.assertAlmostEqual(risk, 0.7)
+        self.assertIn("brand_impersonation", applied)
+
+    def test_brand_misuse_is_never_safe(self):
+        risk, _ = apply_rules(0.05, check_url("https://g00gle.com"))
+
+        self.assertEqual(risk_to_result(risk), "Suspicious URL")
+
+    def test_shortener_is_never_safe(self):
+        risk, applied = apply_rules(0.05, check_url("https://bit.ly/abc"))
+
+        self.assertEqual(risk, SAFE_CUTOFF)
+        self.assertIn("shortener", applied)
+
+    def test_free_hosting_alone_stays_suspicious(self):
+        risk, applied = apply_rules(0.99, check_url("https://my-portfolio.github.io"))
+
+        self.assertLess(risk, PHISHING_CUTOFF)
+        self.assertEqual(risk_to_result(risk), "Suspicious URL")
+        self.assertIn("free_hosting_cap", applied)
+
+    def test_free_hosting_with_brand_can_be_phishing(self):
+        risk, _ = apply_rules(0.9, check_url("https://sbi-yono-reward.pages.dev"))
+
+        self.assertEqual(risk_to_result(risk), "Phishing/Fraud URL")
+
+    def test_risk_stays_between_0_and_1(self):
+        risk, _ = apply_rules(0.95, check_url("http://paypal.com@192.168.1.5/?u=https://x.xyz"))
+
+        self.assertLessEqual(risk, 1.0)
+
+    def test_reasons_mention_http_but_score_ignores_it(self):
+        http_risk, _ = apply_rules(0.3, check_url("http://example.com/page"))
+        https_risk, _ = apply_rules(0.3, check_url("https://example.com/page"))
+
+        self.assertEqual(http_risk, https_risk)
+        self.assertIn(
+            "Not using HTTPS (connection is not encrypted)",
+            build_reasons(0.3, check_url("http://example.com/page")),
         )
-
-        self.assertEqual(adjusted, 0.20)
-
-    def test_trusted_domain_cap_does_not_raise_a_low_score(self):
-        url = "https://accounts.google.com"
-        features = extract_features(url)
-        reasons = get_reasons_from_features(url, features)
-
-        adjusted = apply_risk_rules(
-            raw_ml_risk=0.10,
-            features=features,
-            reasons=reasons,
-            trusted=True,
-        )
-
-        self.assertEqual(adjusted, 0.10)
-
-    def test_http_trusted_domain_is_not_capped(self):
-        url = "http://accounts.google.com"
-        features = extract_features(url)
-        reasons = get_reasons_from_features(url, features)
-
-        adjusted = apply_risk_rules(
-            raw_ml_risk=0.82,
-            features=features,
-            reasons=reasons,
-            trusted=True,
-        )
-
-        self.assertEqual(adjusted, 0.82)
-
-    def test_github_homepage_is_trusted_but_user_pages_are_not(self):
-        self.assertTrue(is_trusted_domain("https://github.com"))
-        self.assertFalse(is_trusted_domain("https://name.github.io/login"))
-
-    def test_risk_score_boundaries(self):
-        self.assertEqual(risk_score_to_result(20), "Safe URL")
-        self.assertEqual(risk_score_to_result(45), "Suspicious URL")
-        self.assertEqual(risk_score_to_result(80), "Phishing/Fraud URL")
 
 
 if __name__ == "__main__":

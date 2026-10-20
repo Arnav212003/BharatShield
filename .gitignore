@@ -23,6 +23,14 @@ Thumbs.db
 
 .streamlit/secrets.toml
 
-# Local training data. Its source/license must be verified before sharing.
+# Downloaded and built datasets stay local (see data/README.md).
+# data/sources.json and data/dataset_summary.json are tracked.
+/data/raw/
+/data/train.csv
+/data/external_test.csv
 /data/phishing.csv
+/data/legacy/
+
+# old experiments
+/model_candidates/
 

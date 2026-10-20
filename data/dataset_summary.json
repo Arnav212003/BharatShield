@@ -1,0 +1,35 @@
+{
+  "cutoff": "2026-09-15",
+  "seed": 42,
+  "train_rows": 419872,
+  "train_counts": {
+    "common_crawl_legitimate": 249999,
+    "majestic_legitimate": 59982,
+    "openphish_phishing": 33831,
+    "phishing_database_phishing": 76060
+  },
+  "external_test_rows": 35988,
+  "external_test_counts": {
+    "common_crawl": 18658,
+    "openphish": 9330,
+    "tranco": 8000
+  },
+  "openphish_first_seen": {
+    "train_from": "2026-07-02T00:00:07Z",
+    "train_to": "2026-09-14T12:00:06Z",
+    "test_from": "2026-09-15T00:00:06Z",
+    "test_to": "2026-10-20T12:00:06Z"
+  },
+  "cleaning": {
+    "legitimate_rows_dropped_for_phishing_host": {
+      "common_crawl": 362,
+      "majestic": 11,
+      "tranco": 280
+    },
+    "conflicting_key_rows_dropped": 0
+  },
+  "leakage_checks": {
+    "test_groups_in_train": 0,
+    "test_keys_in_train": 0
+  }
+}
