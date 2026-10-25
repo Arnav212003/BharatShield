@@ -161,6 +161,11 @@ with url_tab:
 
                 st.markdown("### Scan Result")
 
+                show_url_status(result)
+
+                if prediction["trusted_match"]:
+                    st.caption("✔️ Trusted website")
+
                 show_metrics(
                     risk_score,
                     result,
@@ -170,8 +175,6 @@ with url_tab:
                 )
 
                 st.progress(risk_score / 100)
-
-                show_url_status(result)
 
                 if prediction["impersonated_brand"]:
                     st.error(
@@ -297,6 +300,8 @@ with message_tab:
 
                 st.markdown("### Scan Result")
 
+                show_message_status(status)
+
                 show_metrics(
                     risk_score,
                     status,
@@ -306,8 +311,6 @@ with message_tab:
                 )
 
                 st.progress(risk_score / 100)
-
-                show_message_status(status)
 
                 st.markdown("### Why")
 
