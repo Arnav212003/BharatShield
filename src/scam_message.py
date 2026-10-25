@@ -477,6 +477,16 @@ def analyze_scam_message(message, url_predictor=None):
                     "risk_score": risk,
                     "reasons": url_reasons,
                 })
+
+                # a bad link should show up as a signal, not only as a score
+                if result in {"Suspicious URL", "Phishing/Fraud URL"}:
+                    if "suspicious_link" not in signals:
+                        reasons.append("A link in the message was flagged by the URL scanner")
+                        signals.append("suspicious_link")
+
+                    for reason in url_reasons or []:
+                        if reason not in reasons:
+                            reasons.append(reason)
             except Exception:
                 url_results.append({"url": url, "error": "Link could not be scanned"})
 

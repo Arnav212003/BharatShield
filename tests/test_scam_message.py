@@ -86,6 +86,23 @@ class TestScamMessage(unittest.TestCase):
         self.assertEqual(result["status"], "Likely Fraud")
         self.assertEqual(result["url_results"][0]["risk_score"], 85)
 
+    def test_bad_link_counts_as_signal(self):
+        def fake_predictor(url):
+            return "Phishing/Fraud URL", 90, ["Uses the name 'sbi' but is not its official website"]
+
+        result = analyze_scam_message("Check this sbi-rewards.xyz", url_predictor=fake_predictor)
+
+        self.assertEqual(result["status"], "Likely Fraud")
+        self.assertIn("suspicious_link", result["signals"])
+        self.assertIn("Uses the name 'sbi' but is not its official website", result["reasons"])
+
+    def test_safe_link_is_not_a_signal(self):
+        def fake_predictor(url):
+            return "Safe URL", 10, ["Domain is on the trusted list"]
+
+        result = analyze_scam_message("Check this sbi.co.in", url_predictor=fake_predictor)
+        self.assertNotIn("suspicious_link", result["signals"])
+
     def test_broken_link_scan_does_not_crash(self):
         def failing_predictor(url):
             raise RuntimeError("model missing")
