@@ -286,6 +286,14 @@ def apply_rules(
         risk = safe_cutoff
         applied.append("shortener")
 
+    strong_hit = checks["brand"] or checks["ip_address"] or checks["at_symbol"]
+
+    if checks["shortener"] and not strong_hit and risk >= phishing_cutoff:
+        # the model only sees "bit.ly/xyz", not the real site, so a high
+        # model score alone is not enough to call it phishing
+        risk = phishing_cutoff - 0.01
+        applied.append("shortener_cap")
+
     if checks["user_content_root"] and not checks["brand"] and risk >= phishing_cutoff:
         # free hosting has very few legitimate examples in the training data,
         # so the model alone is not enough to call it phishing
@@ -333,7 +341,9 @@ def build_reasons(ml_risk, checks, safe_cutoff=SAFE_CUTOFF):
             "anyone can create a page here"
         )
 
-    if ml_risk >= safe_cutoff:
+    if ml_risk >= safe_cutoff and checks["trusted_match"]:
+        reasons.append("URL model scored it as risky, but the trusted list marks it as an official site")
+    elif ml_risk >= safe_cutoff:
         reasons.append("URL model: pattern is similar to known phishing links")
     else:
         reasons.append("URL model: pattern is similar to normal websites")

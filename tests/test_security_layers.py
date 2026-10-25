@@ -110,6 +110,18 @@ class TestApplyRules(unittest.TestCase):
         self.assertEqual(risk, SAFE_CUTOFF)
         self.assertIn("shortener", applied)
 
+    def test_shortener_alone_stays_suspicious(self):
+        risk, applied = apply_rules(0.99, check_url("https://bit.ly/abc"))
+
+        self.assertEqual(risk_to_result(risk), "Suspicious URL")
+        self.assertIn("shortener_cap", applied)
+
+    def test_shortener_with_at_trick_can_be_phishing(self):
+        risk, applied = apply_rules(0.7, check_url("http://sbi.co.in@bit.ly/abc"))
+
+        self.assertEqual(risk_to_result(risk), "Phishing/Fraud URL")
+        self.assertNotIn("shortener_cap", applied)
+
     def test_free_hosting_alone_stays_suspicious(self):
         risk, applied = apply_rules(0.99, check_url("https://my-portfolio.github.io"))
 
@@ -136,6 +148,17 @@ class TestApplyRules(unittest.TestCase):
             "Not using HTTPS (connection is not encrypted)",
             build_reasons(0.3, check_url("http://example.com/page")),
         )
+
+    def test_trusted_domain_with_high_ml_score(self):
+        trusted_reasons = build_reasons(0.9, check_url("https://www.hdfcbank.com"))
+        other_reasons = build_reasons(0.9, check_url("https://example.com"))
+
+        self.assertIn(
+            "URL model scored it as risky, but the trusted list marks it as an official site",
+            trusted_reasons,
+        )
+        self.assertNotIn("URL model: pattern is similar to known phishing links", trusted_reasons)
+        self.assertIn("URL model: pattern is similar to known phishing links", other_reasons)
 
 
 if __name__ == "__main__":
